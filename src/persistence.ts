@@ -200,6 +200,7 @@ export class MemoryDraftRepository implements DraftRepository {
 export async function loadOrCreateDraft(repository: DraftRepository, storage: Storage = localStorage): Promise<DraftLoadResult> {
   const pointer = storage.getItem(ACTIVE_DRAFT_POINTER_KEY) || String(await repository.getMeta("activeDraftId") ?? "");
   if (pointer) {
+    // Operational read failures must not create a replacement draft or move the pointer.
     const existing = await repository.getDraft(pointer);
     if (existing) {
       storage.setItem(ACTIVE_DRAFT_POINTER_KEY, existing.draftId);
@@ -220,6 +221,8 @@ export async function loadOrCreateDraft(repository: DraftRepository, storage: St
       storage.setItem(ACTIVE_DRAFT_POINTER_KEY, recovered.draftId);
       return { draft: recovered, migratedFromV1: false, recovered: true };
     }
+
+    // The legacy value is removed only after the new draft is durably written.
     await repository.putDraft(migrated);
     storage.setItem(ACTIVE_DRAFT_POINTER_KEY, migrated.draftId);
     storage.removeItem(LEGACY_STORAGE_KEY);

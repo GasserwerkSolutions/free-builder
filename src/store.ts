@@ -17,6 +17,7 @@ export class BuilderStore {
   }
 
   get snapshot(): Readonly<BuilderDraftV2> { return this.draft; }
+
   subscribe(listener: StoreListener): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   subscribeSave(listener: SaveListener): () => void { this.saveListeners.add(listener); return () => this.saveListeners.delete(listener); }
 
@@ -64,6 +65,8 @@ export class BuilderStore {
         throw error;
       }
     });
+    // Keep the serialization chain usable after an error, while returning the
+    // real operation so callers such as flush() can observe durability failure.
     this.saveChain = operation.catch(() => undefined);
     return operation;
   }

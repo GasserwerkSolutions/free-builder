@@ -5,7 +5,9 @@ import {
   type ThemePresetName, type WeeklySchedule,
 } from "./domain-model.js";
 import { normalizeHttpUrl, slugify } from "./domain-helpers.js";
+
 import { asBoolean, asNumber, asRecord, asString, safeColor, safeFocalPoint, safeIso } from "./domain-coerce.js";
+
 
 export function normalizeSchedule(value: unknown, fallback = createDefaultSchedule()): WeeklySchedule {
   if (!Array.isArray(value)) return structuredClone(fallback);

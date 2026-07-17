@@ -16,6 +16,7 @@ import {
   bindStaticInputs,
   renderDynamicControls,
   renderHours,
+  renderPresets,
   renderPreview,
   renderServices,
   renderTestimonials,
