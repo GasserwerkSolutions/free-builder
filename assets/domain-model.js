@@ -18,6 +18,9 @@ export function createClientId(prefix) {
         return `${prefix}-${id}`;
     return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
+export function createClosedSchedule() {
+    return [0, 1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({ dayOfWeek, closed: true, ranges: [] }));
+}
 export function createDefaultSchedule() {
     const defaults = {
         0: { closed: true, ranges: [] },
