@@ -125,6 +125,10 @@ export function createClientId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+export function createClosedSchedule(): WeeklySchedule {
+  return ([0, 1, 2, 3, 4, 5, 6] as DayOfWeek[]).map((dayOfWeek) => ({ dayOfWeek, closed: true, ranges: [] }));
+}
+
 export function createDefaultSchedule(): WeeklySchedule {
   const defaults: Record<DayOfWeek, { closed: boolean; ranges: TimeRange[] }> = {
     0: { closed: true, ranges: [] },

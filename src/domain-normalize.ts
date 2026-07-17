@@ -1,13 +1,11 @@
 import {
-  MAX_TESTIMONIALS, PRESETS, SCHEMA_VERSION, createDefaultDraft, createDefaultSchedule, dayName,
+  MAX_TESTIMONIALS, PRESETS, SCHEMA_VERSION, createClosedSchedule, createDefaultDraft, createDefaultSchedule, dayName,
   type AssetKind, type BuilderAssetRef, type BuilderDraftV2, type BuilderService, type BuilderStaff,
   type DayOfWeek, type PriceType, type PublicationState,
   type ThemePresetName, type WeeklySchedule,
 } from "./domain-model.js";
 import { normalizeHttpUrl, slugify } from "./domain-helpers.js";
-
 import { asBoolean, asNumber, asRecord, asString, safeColor, safeFocalPoint, safeIso } from "./domain-coerce.js";
-
 
 export function normalizeSchedule(value: unknown, fallback = createDefaultSchedule()): WeeklySchedule {
   if (!Array.isArray(value)) return structuredClone(fallback);
@@ -67,7 +65,7 @@ export function normalizeDraftV2(input: unknown): BuilderDraftV2 {
   const serviceIds = new Set(services.map((service) => service.clientId));
   const staff = Array.isArray(source.staff) ? source.staff.map((value, index): BuilderStaff => {
     const row = asRecord(value);
-    return { clientId: asString(row.clientId, `staff-${index + 1}`), name: asString(row.name, "Neue Person"), email: asString(row.email), role: asString(row.role, "Coiffeur/in"), bio: asString(row.bio), specialties: Array.isArray(row.specialties) ? row.specialties.map((item) => asString(item)).filter(Boolean).slice(0, 20) : [], active: asBoolean(row.active, true), serviceClientIds: Array.isArray(row.serviceClientIds) ? [...new Set(row.serviceClientIds.map((item) => asString(item)).filter((id) => serviceIds.has(id)))] : [], workingHours: normalizeSchedule(row.workingHours), portraitAssetLocalId: asString(row.portraitAssetLocalId) || null };
+    return { clientId: asString(row.clientId, `staff-${index + 1}`), name: asString(row.name, "Neue Person"), email: asString(row.email), role: asString(row.role, "Coiffeur/in"), bio: asString(row.bio), specialties: Array.isArray(row.specialties) ? row.specialties.map((item) => asString(item)).filter(Boolean).slice(0, 20) : [], active: asBoolean(row.active, true), serviceClientIds: Array.isArray(row.serviceClientIds) ? [...new Set(row.serviceClientIds.map((item) => asString(item)).filter((id) => serviceIds.has(id)))] : [], workingHours: normalizeSchedule(row.workingHours, createClosedSchedule()), portraitAssetLocalId: asString(row.portraitAssetLocalId) || null };
   }) : [];
   const assets = Array.isArray(source.assets) ? source.assets.map((value): BuilderAssetRef | null => { const row = asRecord(value); const kind = row.kind as AssetKind; if (!["HERO", "PORTRAIT", "GALLERY", "LOGO"].includes(kind)) return null; return { localId: asString(row.localId), kind, ownerClientId: asString(row.ownerClientId) || null, fileName: asString(row.fileName), mimeType: asString(row.mimeType), bytes: asNumber(row.bytes, 0, 0, Number.MAX_SAFE_INTEGER), width: row.width == null ? null : asNumber(row.width, 0, 0, 100000), height: row.height == null ? null : asNumber(row.height, 0, 0, 100000), alt: asString(row.alt), focalPoint: safeFocalPoint(row.focalPoint), uploadedAssetId: asString(row.uploadedAssetId) || null }; }).filter((item): item is BuilderAssetRef => Boolean(item?.localId)) : [];
   const now = new Date().toISOString();
