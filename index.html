@@ -6,18 +6,12 @@
   <meta name="description" content="Kostenloser Coiffeur-Website-Builder mit Service- und Preisverwaltung.">
   <title>Salon Website Builder</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="foundation.css">
 </head>
 <body>
   <a class="skip-link" href="#builder-main">Zum Builder springen</a>
-
   <header class="topbar">
-    <div class="brand">
-      <span class="brand__mark" aria-hidden="true">G</span>
-      <div>
-        <strong>Salon Builder</strong>
-        <span>Gratis-Website für Coiffeur-Salons</span>
-      </div>
-    </div>
+    <div class="brand"><span class="brand__mark" aria-hidden="true">G</span><div><strong>Salon Builder</strong><span>Gratis-Website für Coiffeur-Salons</span></div></div>
     <div class="topbar__actions">
       <span id="saveStatus" class="status-pill" aria-live="polite">Lokal gespeichert</span>
       <button class="button button--quiet" type="button" data-action="reset">Zurücksetzen</button>
@@ -37,263 +31,104 @@
         <button class="surface-nav__item" type="button" data-panel-target="publish">Fertig</button>
       </nav>
 
-      <div class="surface-stage">
-        <div id="surfaceCard" class="surface-card">
-          <section class="panel is-active" data-panel="salon" aria-labelledby="panel-salon-title">
-            <div class="panel__header">
-              <p class="eyebrow">Grundlage</p>
-              <h1 id="panel-salon-title">Dein Salon</h1>
-              <p>Diese Angaben erscheinen auf der Website und bilden später die Basis für dein Buchungskonto.</p>
-            </div>
+      <div class="surface-stage"><div id="surfaceCard" class="surface-card">
+        <section class="panel is-active" data-panel="salon" aria-labelledby="panel-salon-title">
+          <div class="panel__header"><p class="eyebrow">Grundlage</p><h1 id="panel-salon-title">Dein Salon</h1><p>Diese Angaben erscheinen auf der Website und bilden später die Basis für dein Buchungskonto.</p></div>
+          <label class="field"><span>Salonname</span><input type="text" data-bind="salon.name" autocomplete="organization" required></label>
+          <label class="field"><span>Kurzer Zusatz</span><input type="text" data-bind="salon.tagline" placeholder="Coiffeur in Zürich"></label>
+          <div class="field-grid">
+            <label class="field"><span>Telefon</span><input type="tel" data-bind="salon.phone" autocomplete="tel"></label>
+            <label class="field"><span>E-Mail</span><input type="email" data-bind="salon.email" autocomplete="email"></label>
+          </div>
+          <label class="field"><span>Adresse</span><input type="text" data-bind="salon.address" autocomplete="street-address"></label>
+          <div class="field-grid">
+            <label class="field"><span>PLZ</span><input type="text" data-bind="salon.postalCode" inputmode="numeric" autocomplete="postal-code"></label>
+            <label class="field"><span>Ort</span><input type="text" data-bind="salon.city" autocomplete="address-level2"></label>
+          </div>
+          <label class="field"><span>Instagram</span><input type="url" data-bind="salon.instagram" placeholder="https://instagram.com/dein-salon"></label>
+          <div class="foundation-note"><strong>Buchung wird automatisch verbunden</strong><span>Die produktive Buchungsadresse entsteht serverseitig beim späteren Veröffentlichen. Es wird kein API-Schlüssel oder fremder Buchungslink im Browser gespeichert.</span></div>
+          <div class="foundation-note"><strong>Titelbild wird lokal hochgeladen</strong><span>Externe Bild-URLs sind keine neue Datenwahrheit. Die sichere lokale Bildverwaltung folgt auf diesem Speicherfundament.</span></div>
+          <p id="migrationNotice" class="migration-notice-builder" hidden></p>
+        </section>
 
-            <label class="field">
-              <span>Salonname</span>
-              <input type="text" data-bind="salon.name" autocomplete="organization" required>
-            </label>
-            <label class="field">
-              <span>Kurzer Zusatz</span>
-              <input type="text" data-bind="salon.tagline" placeholder="Coiffeur in Zürich">
-            </label>
-            <div class="field-grid">
-              <label class="field">
-                <span>Telefon</span>
-                <input type="tel" data-bind="salon.phone" autocomplete="tel">
-              </label>
-              <label class="field">
-                <span>E-Mail</span>
-                <input type="email" data-bind="salon.email" autocomplete="email">
-              </label>
-            </div>
-            <label class="field">
-              <span>Adresse</span>
-              <input type="text" data-bind="salon.address" autocomplete="street-address">
-            </label>
-            <div class="field-grid">
-              <label class="field">
-                <span>PLZ</span>
-                <input type="text" data-bind="salon.postalCode" inputmode="numeric" autocomplete="postal-code">
-              </label>
-              <label class="field">
-                <span>Ort</span>
-                <input type="text" data-bind="salon.city" autocomplete="address-level2">
-              </label>
-            </div>
-            <label class="field">
-              <span>Instagram</span>
-              <input type="url" data-bind="salon.instagram" placeholder="https://instagram.com/dein-salon">
-            </label>
-            <label class="field">
-              <span>Buchungslink</span>
-              <input type="url" data-bind="salon.bookingUrl" placeholder="https://booking.example.ch/dein-salon">
-              <small>Der Builder ergänzt bei buchbaren Leistungen automatisch die Service-ID.</small>
-            </label>
-            <label class="field">
-              <span>Titelbild-URL</span>
-              <input type="url" data-bind="salon.heroImage" placeholder="https://…/salon.jpg">
-            </label>
-          </section>
+        <section class="panel" data-panel="copy" aria-labelledby="panel-copy-title" hidden>
+          <div class="panel__header"><p class="eyebrow">Worte</p><h2 id="panel-copy-title">Texte schreiben</h2><p>Nur die wichtigsten Texte. Kein technischer Editor, kein API-Schlüssel.</p></div>
+          <label class="field"><span>Kleine Zeile über dem Titel</span><input type="text" data-bind="copy.heroLabel"></label>
+          <label class="field"><span>Haupttitel</span><textarea data-bind="copy.heroTitle" rows="3"></textarea></label>
+          <label class="field"><span>Untertitel</span><textarea data-bind="copy.heroSubtitle" rows="4"></textarea></label>
+          <label class="field"><span>Titel über den Leistungen</span><input type="text" data-bind="copy.servicesTitle"></label>
+          <label class="field"><span>Einleitung zu den Leistungen</span><textarea data-bind="copy.servicesSubtitle" rows="3"></textarea></label>
+          <label class="field"><span>Buchungs-Titel</span><input type="text" data-bind="copy.bookingTitle"></label>
+          <label class="field"><span>Buchungs-Text</span><textarea data-bind="copy.bookingSubtitle" rows="3"></textarea></label>
+        </section>
 
-          <section class="panel" data-panel="copy" aria-labelledby="panel-copy-title" hidden>
-            <div class="panel__header">
-              <p class="eyebrow">Worte</p>
-              <h2 id="panel-copy-title">Texte schreiben</h2>
-              <p>Nur die wichtigsten Texte. Kein technischer Editor, kein API-Schlüssel.</p>
-            </div>
-            <label class="field">
-              <span>Kleine Zeile über dem Titel</span>
-              <input type="text" data-bind="copy.heroLabel">
-            </label>
-            <label class="field">
-              <span>Haupttitel</span>
-              <textarea data-bind="copy.heroTitle" rows="3"></textarea>
-            </label>
-            <label class="field">
-              <span>Untertitel</span>
-              <textarea data-bind="copy.heroSubtitle" rows="4"></textarea>
-            </label>
-            <label class="field">
-              <span>Titel über den Leistungen</span>
-              <input type="text" data-bind="copy.servicesTitle">
-            </label>
-            <label class="field">
-              <span>Einleitung zu den Leistungen</span>
-              <textarea data-bind="copy.servicesSubtitle" rows="3"></textarea>
-            </label>
-            <label class="field">
-              <span>Buchungs-Titel</span>
-              <input type="text" data-bind="copy.bookingTitle">
-            </label>
-            <label class="field">
-              <span>Buchungs-Text</span>
-              <textarea data-bind="copy.bookingSubtitle" rows="3"></textarea>
-            </label>
-          </section>
+        <section class="panel" data-panel="services" aria-labelledby="panel-services-title" hidden>
+          <div class="panel__header panel__header--action"><div><p class="eyebrow">Ein Katalog</p><h2 id="panel-services-title">Leistungen & Preise</h2><p>Diese Liste speist Website, Preisliste und später dein Buchungssystem.</p></div><button class="button button--primary" type="button" data-action="add-service">Leistung hinzufügen</button></div>
+          <div id="serviceList" class="item-list"></div>
+        </section>
 
-          <section class="panel" data-panel="services" aria-labelledby="panel-services-title" hidden>
-            <div class="panel__header panel__header--action">
-              <div>
-                <p class="eyebrow">Ein Katalog</p>
-                <h2 id="panel-services-title">Leistungen & Preise</h2>
-                <p>Diese Liste speist Website, Preisliste und später dein Buchungssystem.</p>
-              </div>
-              <button class="button button--primary" type="button" data-action="add-service">Leistung hinzufügen</button>
-            </div>
-            <div id="serviceList" class="item-list"></div>
-          </section>
+        <section class="panel" data-panel="hours" aria-labelledby="panel-hours-title" hidden>
+          <div class="panel__header"><p class="eyebrow">Erreichbarkeit</p><h2 id="panel-hours-title">Öffnungszeiten</h2><p>Der Datenvertrag unterstützt bereits mehrere Zeitspannen. Diese erste Oberfläche bearbeitet vorerst die Hauptspanne.</p></div>
+          <div id="hoursList" class="hours-list"></div>
+        </section>
 
-          <section class="panel" data-panel="hours" aria-labelledby="panel-hours-title" hidden>
-            <div class="panel__header">
-              <p class="eyebrow">Erreichbarkeit</p>
-              <h2 id="panel-hours-title">Öffnungszeiten</h2>
-              <p>Geschlossene Tage bleiben sichtbar und werden klar ausgezeichnet.</p>
-            </div>
-            <div id="hoursList" class="hours-list"></div>
-          </section>
+        <section class="panel" data-panel="voices" aria-labelledby="panel-voices-title" hidden>
+          <div class="panel__header panel__header--action"><div><p class="eyebrow">Optional</p><h2 id="panel-voices-title">Manuelle Kundenstimmen</h2><p>Keine Bewertungs-API und keine automatisch erfundenen Sterne. Maximal drei selbst eingetragene Stimmen.</p></div><button class="button button--primary" type="button" data-action="add-testimonial">Stimme hinzufügen</button></div>
+          <label class="switch-row"><input type="checkbox" data-bind="testimonials.enabled"><span>Kundenstimmen auf der Website zeigen</span></label>
+          <div id="testimonialList" class="item-list"></div>
+        </section>
 
-          <section class="panel" data-panel="voices" aria-labelledby="panel-voices-title" hidden>
-            <div class="panel__header panel__header--action">
-              <div>
-                <p class="eyebrow">Optional</p>
-                <h2 id="panel-voices-title">Manuelle Kundenstimmen</h2>
-                <p>Keine Bewertungs-API und keine automatisch erfundenen Sterne. Maximal drei selbst eingetragene Stimmen.</p>
-              </div>
-              <button class="button button--primary" type="button" data-action="add-testimonial">Stimme hinzufügen</button>
-            </div>
-            <label class="switch-row">
-              <input type="checkbox" data-bind="testimonials.enabled">
-              <span>Kundenstimmen auf der Website zeigen</span>
-            </label>
-            <div id="testimonialList" class="item-list"></div>
-          </section>
+        <section class="panel" data-panel="design" aria-labelledby="panel-design-title" hidden>
+          <div class="panel__header"><p class="eyebrow">Aussehen</p><h2 id="panel-design-title">Ein Stil, wenige Entscheidungen</h2><p>Vier salonfähige Richtungen statt technischer Designparameter.</p></div>
+          <div class="preset-grid" role="radiogroup" aria-label="Designstil">
+            <button type="button" class="preset-card" data-preset="elegant"><strong>Elegant</strong><span>Ruhig und hochwertig</span></button>
+            <button type="button" class="preset-card" data-preset="modern"><strong>Modern</strong><span>Klar und direkt</span></button>
+            <button type="button" class="preset-card" data-preset="natural"><strong>Natürlich</strong><span>Warm und freundlich</span></button>
+            <button type="button" class="preset-card" data-preset="bold"><strong>Ausdrucksstark</strong><span>Kontrast und Charakter</span></button>
+          </div>
+          <div class="field-grid">
+            <label class="field"><span>Hauptfarbe</span><input type="color" data-bind="theme.primary"></label>
+            <label class="field"><span>Akzentfarbe</span><input type="color" data-bind="theme.accent"></label>
+          </div>
+        </section>
 
-          <section class="panel" data-panel="design" aria-labelledby="panel-design-title" hidden>
-            <div class="panel__header">
-              <p class="eyebrow">Aussehen</p>
-              <h2 id="panel-design-title">Ein Stil, wenige Entscheidungen</h2>
-              <p>Vier salonfähige Richtungen statt technischer Designparameter.</p>
-            </div>
-            <div class="preset-grid" role="radiogroup" aria-label="Designstil">
-              <button type="button" class="preset-card" data-preset="elegant"><strong>Elegant</strong><span>Ruhig und hochwertig</span></button>
-              <button type="button" class="preset-card" data-preset="modern"><strong>Modern</strong><span>Klar und direkt</span></button>
-              <button type="button" class="preset-card" data-preset="natural"><strong>Natürlich</strong><span>Warm und freundlich</span></button>
-              <button type="button" class="preset-card" data-preset="bold"><strong>Ausdrucksstark</strong><span>Kontrast und Charakter</span></button>
-            </div>
-            <div class="field-grid">
-              <label class="field">
-                <span>Hauptfarbe</span>
-                <input type="color" data-bind="theme.primary">
-              </label>
-              <label class="field">
-                <span>Akzentfarbe</span>
-                <input type="color" data-bind="theme.accent">
-              </label>
-            </div>
-          </section>
-
-          <section class="panel" data-panel="publish" aria-labelledby="panel-publish-title" hidden>
-            <div class="panel__header">
-              <p class="eyebrow">Kontrolle</p>
-              <h2 id="panel-publish-title">Bereit für den nächsten Schritt</h2>
-              <p>Die Gratisversion exportiert eine vollständige statische Seite. Die direkte Veröffentlichung und Kontosynchronisierung folgen mit der Plattformanbindung.</p>
-            </div>
-            <div id="readinessList" class="readiness-list"></div>
-            <div class="publish-actions">
-              <button class="button button--primary button--large" type="button" data-action="export">Website als HTML exportieren</button>
-              <button class="button button--quiet" type="button" data-action="copy-json">Salon-Daten kopieren</button>
-            </div>
-            <p class="privacy-note">Alle Eingaben bleiben in diesem Browser. Der Builder sendet keine Inhalte und keine API-Schlüssel an Dritte.</p>
-          </section>
-        </div>
-      </div>
+        <section class="panel" data-panel="publish" aria-labelledby="panel-publish-title" hidden>
+          <div class="panel__header"><p class="eyebrow">Kontrolle</p><h2 id="panel-publish-title">Bereit für den nächsten Schritt</h2><p>Der Entwurf liegt jetzt versioniert in IndexedDB. Direkte Veröffentlichung bleibt gesperrt, bis Team, Bilder, Magic Link und SaaS-Aktivierung vollständig angebunden sind.</p></div>
+          <div id="readinessList" class="readiness-list"></div>
+          <div class="publish-actions"><button class="button button--primary button--large" type="button" data-action="export">Website als HTML exportieren</button><button class="button button--quiet" type="button" data-action="copy-json">Entwurf kopieren</button></div>
+          <p class="privacy-note">Alle Textdaten liegen in einem versionierten lokalen Entwurf. localStorage enthält nur dessen Kennung; Bilddateien und Aktivierungstokens werden dort nie gespeichert.</p>
+        </section>
+      </div></div>
     </aside>
 
     <section class="preview-area" aria-label="Live-Vorschau">
-      <div class="preview-toolbar">
-        <div>
-          <strong>Live-Vorschau</strong>
-          <span id="previewHint">Desktop</span>
-        </div>
-        <div class="viewport-switch" role="group" aria-label="Vorschaugrösse">
-          <button class="viewport-switch__button is-active" type="button" data-viewport="desktop">Desktop</button>
-          <button class="viewport-switch__button" type="button" data-viewport="tablet">Tablet</button>
-          <button class="viewport-switch__button" type="button" data-viewport="mobile">Mobile</button>
-        </div>
-      </div>
-      <div class="preview-desk">
-        <iframe id="previewFrame" title="Vorschau der Salon-Website" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"></iframe>
-      </div>
+      <div class="preview-toolbar"><div><strong>Live-Vorschau</strong><span id="previewHint">Desktop</span></div><div class="viewport-switch" role="group" aria-label="Vorschaugrösse"><button class="viewport-switch__button is-active" type="button" data-viewport="desktop">Desktop</button><button class="viewport-switch__button" type="button" data-viewport="tablet">Tablet</button><button class="viewport-switch__button" type="button" data-viewport="mobile">Mobile</button></div></div>
+      <div class="preview-desk"><iframe id="previewFrame" title="Vorschau der Salon-Website" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"></iframe></div>
     </section>
   </main>
 
   <template id="serviceTemplate">
     <article class="item-card" data-service-card>
-      <div class="item-card__topline">
-        <span class="drag-dot" aria-hidden="true">•••</span>
-        <strong data-service-number>Leistung</strong>
-        <button class="icon-button" type="button" data-action="remove-service" aria-label="Leistung entfernen">×</button>
-      </div>
-      <div class="field-grid">
-        <label class="field">
-          <span>Kategorie</span>
-          <input type="text" data-service-field="category" placeholder="Schnitt">
-        </label>
-        <label class="field">
-          <span>Name</span>
-          <input type="text" data-service-field="name" placeholder="Damenschnitt">
-        </label>
-      </div>
-      <label class="field">
-        <span>Kurzbeschreibung</span>
-        <input type="text" data-service-field="description" placeholder="Was ist enthalten?">
-      </label>
+      <div class="item-card__topline"><span class="drag-dot" aria-hidden="true">•••</span><strong data-service-number>Leistung</strong><button class="icon-button" type="button" data-action="remove-service" aria-label="Leistung entfernen">×</button></div>
+      <div class="field-grid"><label class="field"><span>Kategorie</span><input type="text" data-service-field="category" placeholder="Schnitt"></label><label class="field"><span>Name</span><input type="text" data-service-field="name" placeholder="Damenschnitt"></label></div>
+      <label class="field"><span>Kurzbeschreibung</span><input type="text" data-service-field="description" placeholder="Was ist enthalten?"></label>
       <div class="field-grid field-grid--three">
-        <label class="field">
-          <span>Dauer (Min.)</span>
-          <input type="number" min="5" step="5" data-service-field="durationMinutes">
-        </label>
-        <label class="field">
-          <span>Preis (CHF)</span>
-          <input type="number" min="0" step="1" data-service-field="price">
-        </label>
-        <label class="field">
-          <span>Preisart</span>
-          <select data-service-field="priceType">
-            <option value="fixed">Fixpreis</option>
-            <option value="from">Ab-Preis</option>
-            <option value="on-request">Auf Anfrage</option>
-          </select>
-        </label>
+        <label class="field"><span>Dauer (Min.)</span><input type="number" min="5" step="5" data-service-field="durationMinutes"></label>
+        <label class="field"><span>Preis (CHF)</span><input type="number" min="0" step="1" data-service-field="price"></label>
+        <label class="field"><span>Preisart</span><select data-service-field="priceType"><option value="fixed">Fixpreis</option><option value="from">Ab-Preis</option><option value="on-request">Auf Anfrage</option></select></label>
       </div>
-      <label class="switch-row switch-row--compact">
-        <input type="checkbox" data-service-field="bookable">
-        <span>Online buchbar</span>
-      </label>
+      <label class="switch-row switch-row--compact"><input type="checkbox" data-service-field="bookable"><span>Online buchbar</span></label>
     </article>
   </template>
 
   <template id="testimonialTemplate">
     <article class="item-card" data-testimonial-card>
-      <div class="item-card__topline">
-        <strong data-testimonial-number>Kundenstimme</strong>
-        <button class="icon-button" type="button" data-action="remove-testimonial" aria-label="Kundenstimme entfernen">×</button>
-      </div>
-      <label class="field">
-        <span>Zitat</span>
-        <textarea rows="3" data-testimonial-field="quote" placeholder="Was hat die Kundin oder der Kunde gesagt?"></textarea>
-      </label>
-      <div class="field-grid">
-        <label class="field">
-          <span>Name oder Initialen</span>
-          <input type="text" data-testimonial-field="name" placeholder="Laura M.">
-        </label>
-        <label class="field">
-          <span>Zusatz</span>
-          <input type="text" data-testimonial-field="detail" placeholder="Stammkundin">
-        </label>
-      </div>
+      <div class="item-card__topline"><strong data-testimonial-number>Kundenstimme</strong><button class="icon-button" type="button" data-action="remove-testimonial" aria-label="Kundenstimme entfernen">×</button></div>
+      <label class="field"><span>Zitat</span><textarea rows="3" data-testimonial-field="quote" placeholder="Was hat die Kundin oder der Kunde gesagt?"></textarea></label>
+      <div class="field-grid"><label class="field"><span>Name oder Initialen</span><input type="text" data-testimonial-field="name" placeholder="Laura M."></label><label class="field"><span>Zusatz</span><input type="text" data-testimonial-field="detail" placeholder="Stammkundin"></label></div>
     </article>
   </template>
 
-  <script src="app.js"></script>
+  <script type="module" src="assets/main.js"></script>
 </body>
 </html>
