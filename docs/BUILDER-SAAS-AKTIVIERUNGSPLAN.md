@@ -1,10 +1,34 @@
 # Builder → SaaS: Aktivierungs- und Publish-Plan
 
 **Stand:** 2026-07-17  
-**Status:** PROPOSED — Architekturentscheid vollständig, Umsetzung noch nicht begonnen  
-**Builder-Basis:** `GasserwerkSolutions/free-builder`, PR #1, Head `7f35f260fcfe4cc2006dbcd7f3ce4afaf05693f0`  
+**Status:** APPROVED — Rev. 2 (Owner-Freigabe 2026-07-17); Umsetzung noch nicht begonnen  
+**Builder-Basis:** `GasserwerkSolutions/free-builder`, `main` bei `81984e75e1b8ddac6ea03eddb112a28fba15dc11` (nach PR #6)  
 **SaaS-Basis:** `GasserwerkSolutions/gasserwerk`, `main` bei `1e62dd2140727024e80925f9cc6d8590735ed7c7`  
 **Verwandt:** gasserwerk Issue #380, Paketarchitektur PR #382
+
+---
+
+## Revision 2 (Owner-Freigabe 2026-07-17)
+
+Der Owner hat diese Revision fachlich freigegeben. Alle folgenden Punkte sind gegen das SaaS-Repo (`GasserwerkSolutions/gasserwerk`, `main`) code-verifiziert und in die jeweiligen Fachabschnitte integriert, nicht als Anhang geführt.
+
+**Fünf Ergänzungen:**
+
+1. **Scanner-sicherer Confirm-Schritt beim Magic Link** — Der Link öffnet nur eine Bestätigungsseite; Token-Consume, Tenant-Erstellung und Intent-Bindung starten erst bei ausdrücklicher Nutzeraktion. Ein Fehler hier stört nicht nur einen Login, sondern könnte unbeabsichtigt einen Tenant und einen Aktivierungsprozess erzeugen. Integriert in §10.3, Phase G2, §19 und Testmatrix.
+2. **Persistenter lokaler Speicher mit ehrlicher Eviction-Semantik** — `navigator.storage.persist()` wird angefordert und der Rückgabestatus ehrlich behandelt; die UI weist auf mögliche Browser-Eviction lokaler Bilder hin (insbesondere iOS Safari). Integriert in §3.4, Phase F4, Phase I1 und Testmatrix.
+3. **Verbindliche Erst-Copy-Regel für Arbeitszeiten** — „Öffnungszeiten aufs Team übernehmen“ füllt nur leere beziehungsweise unbestätigte Pläne, zeigt Betroffene vorab, überschreibt nur nach ausdrücklicher Bestätigung, bleibt wiederholbar und nie still destruktiv. Integriert in §4.4, §7.4 und Testmatrix.
+4. **Gemeinsamer, versionierter Requirement-Code-Vertrag** — Builder und SaaS teilen einen versionierten Satz fachlicher Readiness-Codes; der Server bleibt autoritativ, jeder Code besitzt eine Builder-Fläche und eine Korrekturaktion. Integriert in §12.3 und die betroffenen Phasen-Gates.
+5. **Rechtliche Mindestseiten als Publish-Gate** — Impressum und Datenschutzseite entstehen als echte CMS-Seiten; unvollständige rechtliche Pflichtangaben blockieren den Publish (`LEGAL_PAGES_INCOMPLETE`). Integriert in §5, §11.5, §12, §19 und Testmatrix.
+
+**Drei Präzisierungen:**
+
+- **G3 (Asset-Upload)** ist Integration vorhandener Bildinfrastruktur (sharp-Pipeline, sha256-Dedup), kein Greenfield-Bildsystem — Phase G3.
+- **G4 (Katalog)** setzt auf der vorhandenen atomaren Kataloggrenze (`catalog-atomic-write.ts`) auf, kein neuer Transaktionsmechanismus — Phase G4.
+- **Theme** wird auf Site-Ebene übernommen (Brand/Markenfarbe), nicht als CMS-Block modelliert — §9.3.
+
+**Eine Abgrenzung:**
+
+- Die Plan-/Capability-Migration ist ein eigener grösserer Produkt- und Architekturstrang (Paketarchitektur PR #382). Der erste Aktivierungsfluss weist ausschliesslich das bestehende FREE-Tier explizit und getestet zu — §18.
 
 ---
 
@@ -54,25 +78,27 @@ Der Vorgang ist erst erfolgreich, wenn:
 
 ### 2.1 Free Builder
 
-**VERIFIZIERT:** Der aktuelle MVP ist eine statische Anwendung ohne Build-Schritt oder Abhängigkeiten.
+**VERIFIZIERT:** Der aktuelle MVP ist eine statische Anwendung; die TypeScript-Quellen (`src/*.ts`) werden per `tsc` zu `assets/*.js` gebaut (CI-Reproduzierbarkeits-Gate), das ausgelieferte Produkt bleibt ohne Laufzeitabhängigkeiten.
 
-- `state.js` speichert `version: 1` vollständig in `localStorage`.
+- Der Zustand ist `BuilderDraftV2` (`schemaVersion: 2`), persistiert über IndexedDB; `localStorage` hält nur den `activeDraftId`-Pointer.
 - Services besitzen bereits stabile Slugs, Kategorie, Dauer, Preisart und Buchbarkeit.
-- Öffnungszeiten bestehen aus genau einer Zeitspanne pro Tag.
-- Das Titelbild ist eine externe URL (`salon.heroImage`).
-- Es gibt kein Teammodell.
+- Der Datenvertrag der Öffnungszeiten (`ScheduleDay.ranges: TimeRange[]`) trägt mehrere Intervalle; die UI bearbeitet derzeit nur die Hauptspanne (`ranges[0]`), die Mehrspannen-UI liefert Phase F3.
+- Das Titelbild ist ein `BuilderAssetRef` (Kind `HERO`) als IndexedDB-Blob, keine externe URL; eine frühere URL überlebt nur als Migrationshinweis (`migration.legacyHeroImageUrl`).
+- Es gibt ein Teammodell mit expliziter Staff↔Service-Zuordnung und Team-Readiness.
 - Der primäre Abschluss ist `HTML exportieren`.
 - Die linke Navigation arbeitet noch mit Panels; der Umblätter-Effekt wird beim Panelwechsel verwendet.
 
 Belegpfade:
 
 - `README.md`
-- `state.js`
 - `index.html`
-- `ui-core.js`
-- `ui-content.js`
-- `ui-actions.js`
-- `website.js`
+- `src/domain-model.ts`
+- `src/persistence.ts`
+- `src/domain-team.ts`
+- `src/team-ui.ts`
+- `src/ui-render.ts`
+- `src/ui-actions.ts`
+- `src/website.ts`
 
 ### 2.2 SaaS: Registrierung
 
@@ -251,6 +277,8 @@ Nach der Verifikation:
 
 Bei Öffnung des Magic Links auf einem anderen Gerät kann der servergespeicherte Text-/Katalogentwurf wiederhergestellt werden. Lokal verbliebene Bilder werden sichtbar als fehlend markiert und können erneut ausgewählt werden. Bilder sind für V1 nicht buchungskritisch und blockieren die Aktivierung nicht.
 
+**ENTSCHEID:** Der Builder fordert `navigator.storage.persist()` an und behandelt den Rückgabestatus ehrlich — eine Ablehnung ist kein Fehler, aber ein bekannter Zustand. Die UI weist transparent darauf hin, dass insbesondere mobile Browser (iOS Safari, Eviction unter Speicherdruck) lokale Bilder entfernen können. Der serverseitig gespeicherte Text-, Katalog- und Team-Draft (Upload beim Publish-Intent-Create, §10.1) bleibt die Recovery-Grundlage; lokale Bilder sind das Einzige, was ausschliesslich lokal lebt.
+
 ### 3.5 Publish ist eine Saga, keine riesige Transaktion
 
 **ENTSCHEID:** Registrierung, Storage, Katalog, CMS und Freigabe können nicht glaubwürdig in einer einzigen DB-Transaktion gekapselt werden. Der Vorgang wird als persistierte, idempotente Aktivierungssaga gebaut.
@@ -328,6 +356,8 @@ Der sichtbare Website-Block `Öffnungszeiten` ist direkt editierbar:
 
 Öffnungszeiten und Arbeitszeiten bleiben danach unabhängig.
 
+**ENTSCHEID:** Die Aktion `Als Ausgangszeiten fürs Team übernehmen` ist nie still destruktiv. Sie füllt standardmässig nur vollständig leere beziehungsweise unbestätigte Wochenpläne, verändert bestehende persönliche Zeiten nicht, zeigt betroffene Personen vorab, überschreibt nur nach ausdrücklicher Bestätigung pro Person oder bewusst gewählter Gruppe und bleibt wiederholbar.
+
 ### 4.5 Bilder
 
 Bildflächen sind keine URL-Felder.
@@ -381,6 +411,13 @@ type BuilderDraftV2 = {
     postalCode: string;
     city: string;
     instagram: string;
+  };
+
+  legal: {
+    operatorName: string;   // Betreiber/Firma, rechtlich verantwortlich
+    legalForm: string;      // z. B. Einzelfirma, GmbH
+    responsibleName: string;
+    // Adresse und Kontakt stammen strukturiert aus salon, nicht als Freitext
   };
 
   copy: {
@@ -582,6 +619,8 @@ Diese Öffnungszeiten als Arbeitszeiten fürs ganze Team übernehmen
 
 Das ist ein einmaliger Copy-Vorgang. Spätere Änderungen bleiben unabhängig und überschreiben keine individuellen Zeiten still.
 
+**ENTSCHEID:** Auch diese Erstübernahme ist nie still destruktiv: Sie füllt nur leere beziehungsweise unbestätigte Pläne, lässt bestehende persönliche Zeiten unangetastet, zeigt betroffene Personen vorab und überschreibt nur nach ausdrücklicher Bestätigung pro Person oder bewusst gewählter Gruppe. Der Vorgang bleibt wiederholbar.
+
 ---
 
 ## 8. Team- und Servicezuordnung im SaaS
@@ -702,6 +741,8 @@ Der Endpoint:
 
 URLs werden nur am Render-Rand aus Asset + Storage aufgelöst.
 
+**ENTSCHEID:** Das Theme (Brand/Markenfarbe aus dem Draft) wird auf Site-/Tenant-Ebene als Brandprojektion übernommen, nicht als eigener CMS-Block modelliert.
+
 ---
 
 ## 10. Publish-Intent und Magic Link
@@ -772,7 +813,7 @@ type BuilderPublishIntent = {
 
 Der Intent speichert keine Binärbilder und keine Klartext-Magic-Link-Tokens.
 
-### 10.3 Magic-Link-Rückkehr
+### 10.3 Magic-Link-Rückkehr über eine Bestätigungsseite
 
 Der Link landet auf einer festen SaaS-/Builder-Route, beispielsweise:
 
@@ -780,17 +821,24 @@ Der Link landet auf einer festen SaaS-/Builder-Route, beispielsweise:
 /website-erstellen/aktivieren?invite=<token>&intent=<id>
 ```
 
+**ENTSCHEID:** Der Magic Link öffnet ausschliesslich eine Bestätigungsseite. Das Öffnen ist ein reiner Lesevorgang: kein Token-Consume, keine Tenant-Erstellung, keine Intent-Bindung, kein mutierender `GET`. Token-Consume, Tenant-/OWNER-Erzeugung und Intent-Bindung starten erst durch eine ausdrückliche Nutzeraktion auf dieser Seite (Form-Submit/POST).
+
+Begründung: Freemail-Scanner (GMX und andere) prefetchen Links in E-Mails und würden ein One-Time-Token vor dem menschlichen Klick verbrennen. Im SaaS ist das produktionserprobt über Fix #355 gelöst (Muster `/login/bestaetigen`, gemergt auf `main`): Der Link zeigt zuerst eine Seite, das Token wird erst beim Nutzer-Submit eingelöst. Der Builder-Aktivierungslink übernimmt dieses Muster 1:1.
+
 Ablauf:
 
-1. bestehendes Consume-Verfahren erzeugt Tenant und OWNER idempotent,
-2. Intent wird atomar an Tenant und User gebunden,
-3. Session steht,
-4. Builder lädt den servergespeicherten Draft,
-5. lokale IndexedDB-Bilder werden erkannt und hochgeladen,
-6. fehlen lokale Bilder, zeigt die UI das transparent,
-7. Aktivierung wird fortgesetzt.
+1. Öffnen des Links rendert nur die Bestätigungsseite; Intent, Tenant und Token bleiben unverändert,
+2. der Nutzer bestätigt ausdrücklich (POST); erst jetzt erzeugt das bestehende Consume-Verfahren Tenant und OWNER idempotent,
+3. Intent wird atomar an Tenant und User gebunden,
+4. Session steht,
+5. Builder lädt den servergespeicherten Draft,
+6. lokale IndexedDB-Bilder werden erkannt und hochgeladen,
+7. fehlen lokale Bilder, zeigt die UI das transparent,
+8. Aktivierung wird fortgesetzt.
 
-Ein zweiter Klick auf denselben Link führt zum vorhandenen Tenant und Intent, nie zu einem zweiten Tenant.
+Ein zweiter Submit desselben Links führt zum vorhandenen Tenant und Intent, nie zu einem zweiten Tenant. Diese Doppelklick-Idempotenz bezieht sich neu auf den Submit, nicht auf das blosse Öffnen des Links.
+
+**RELEASE-GATE:** Ein Prefetch-/Scanner-Aufruf des Links (reiner Seitenaufruf) erzeugt weder Consume noch Tenant noch Intent-Statuswechsel.
 
 ---
 
@@ -806,7 +854,7 @@ Ein zweiter Klick auf denselben Link führt zum vorhandenen Tenant und Intent, n
 05 APPLY_STAFF_WORKING_HOURS
 06 INGEST_AND_RESOLVE_ASSETS
 07 ENSURE_SITE_AND_HOME_PAGE
-08 APPLY_SITE_CONTENT_DRAFT
+08 APPLY_SITE_CONTENT_DRAFT   // inkl. Impressum + Datenschutzseite als echte CMS-Seiten
 09 CHECK_BOOKING_READINESS
 10 PREPARE_PUBLICATION
 11 PUBLISH_SITE
@@ -862,6 +910,14 @@ Bestehende Sites bleiben von diesem zusätzlichen Gate unberührt.
 
 Wenn Site-Publish oder Widget-Aktivierung fehlschlägt, bleibt die Builder-Site hinter dem Aktivierungsgate und der Intent fortsetzbar.
 
+### 11.5 Rechtliche Mindestseiten und FREE-Tier
+
+**ENTSCHEID:** Der Aktivierungsprozess erzeugt standardmässig Impressum und Datenschutzseite als echte, tenant-gebundene CMS-Seiten — als Teil des CMS-Projektionsschritts `08 APPLY_SITE_CONTENT_DRAFT`. Der Publish erzeugt eine echte Schweizer Business-Site, keine exportierte Datei mehr; nDSG und Impressumspflicht gelten damit unmittelbar. Die dafür nötigen Pflichtangaben (Betreiber/Firma, Adresse, Kontakt) werden im Flow strukturiert erfasst (Draft-`legal`-Block plus `salon`), nicht als Freitext. Die generierten Seiten bleiben nach der Aktivierung im Dashboard editierbar.
+
+**RELEASE-GATE:** Unvollständige rechtliche Mindestangaben blockieren den Publish über den Readiness-Code `LEGAL_PAGES_INCOMPLETE` (§12).
+
+**ENTSCHEID:** Schritt `02 APPLY_TENANT_PROFILE` weist dem neuen Tenant ausschliesslich das bestehende FREE-Tier explizit und getestet zu. Die spätere Paket-/Capability-Architektur (Paketarchitektur PR #382) ist ein eigener Strang und kein beiläufiger Bestandteil des Builder-Publish (§18).
+
 ---
 
 ## 12. Server-Readiness und Builder-Readiness
@@ -894,8 +950,17 @@ Vor Cutover läuft die bestehende serverseitige Readiness. Der Builder übersetz
 | `SERVICE_DURATION_UNCONFIRMED` | Dauer bestätigen |
 | Standortcodes | später Standortfläche; V1 darf sie bei einem Standort nicht erzeugen |
 | `BUNDLE_WITHOUT_STAFF` | Bundle im V1-Builder nicht anbieten oder korrekt auflösen |
+| `LEGAL_PAGES_INCOMPLETE` | rechtliche Pflichtangaben (Betreiber/Firma, Adresse, Kontakt) vervollständigen |
 
 Keine Fehlermeldung endet nur in `Publish fehlgeschlagen`.
+
+### 12.3 Gemeinsamer Requirement-Code-Vertrag
+
+**ENTSCHEID:** Builder und SaaS verwenden einen versionierten gemeinsamen Satz fachlicher Readiness-Codes. Die lokalen Prüfungen (§12.1) dienen der frühzeitigen UX; der Server bleibt autoritativ (§12.2). Jeder Server-Code besitzt eine definierte Builder-Fläche und eine konkrete Korrekturaktion — keine namenlose Ablehnung, kein Code ohne zugeordnete Fläche.
+
+**VERIFIZIERT:** Beide Code-Sätze existieren bereits als Ist-Code. SaaS: `ActivationRequirementCode` (`widget-activation.queries.ts`: `NO_SERVICES`, `SERVICE_WITHOUT_STAFF`, `SERVICE_DURATION_UNCONFIRMED`, `NO_STAFF`, `STAFF_WITHOUT_HOURS` …). Builder: `TeamReadinessIssue.code` (`src/domain-team.ts`: `NO_ACTIVE_STAFF`, `STAFF_WITHOUT_NAME`, `STAFF_WITHOUT_SERVICE`, `SERVICE_WITHOUT_STAFF`, `STAFF_WITHOUT_HOURS`), erzeugt via `getTeamReadinessIssues`/`getTeamReadinessChecks` und konsumiert in `src/team-ui.ts`. Beide Sätze sind bereits fast deckungsgleich.
+
+**UMBAU:** Der Vertrag kodifiziert und versioniert diese Menge als eine gemeinsame Quelle. Ein neuer Server-Code — etwa `LEGAL_PAGES_INCOMPLETE` — kann nicht ausgeliefert werden, ohne dass ihm eine Builder-Fläche und eine Korrekturaktion zugeordnet sind. Die Version des Code-Satzes wird zwischen Builder-Artefakt und SaaS-Release abgeglichen.
 
 ---
 
@@ -1040,13 +1105,15 @@ Repository: `free-builder`
 
 - Drag-and-drop/File Picker,
 - IndexedDB-Blobs,
+- `navigator.storage.persist()` anfordern und Rückgabestatus behandeln,
+- transparenter UI-Hinweis auf mögliche Browser-Eviction lokaler Bilder (insbesondere iOS Safari),
 - Hero, Portrait, Galerie,
 - Object-URL-Lifecycle,
 - Alt-Text und Fokuspunkt,
 - URL-Felder entfernen,
 - Rechtebestätigung.
 
-**Gate:** Reload erhält Bilder; Reset und Entfernen löschen Blobs; keine Base64-Daten in localStorage.
+**Gate:** Reload erhält Bilder; Reset und Entfernen löschen Blobs; keine Base64-Daten in localStorage; abgelehnte Persistenz ist sichtbar, aber kein Fehler.
 
 ### Phase I1 — Gleiche Origin und Artefaktlieferung
 
@@ -1056,7 +1123,8 @@ Repositories: beide
 - gepinnter Commit/Checksum im SaaS-Build,
 - Auslieferung unter `/website-erstellen`,
 - CSP und Cache-Regeln,
-- kein Runtime-Download fremden Codes.
+- kein Runtime-Download fremden Codes,
+- persistente Storage-Anforderung, damit lokale Bilder und Draft den Auth-Redirect überstehen.
 
 **Gate:** Builder, Magic Link und Dashboard laufen unter derselben Origin; IndexedDB bleibt nach Auth-Redirect verfügbar.
 
@@ -1068,15 +1136,20 @@ Repository: `gasserwerk`
 - öffentlicher Create-Endpoint,
 - bestehende Registration-Dienste wiederverwenden,
 - fester Redirect,
+- scanner-sichere Bestätigungsseite (Consume erst bei Submit, kein mutierender GET) nach Muster Fix #355,
 - Intent↔PendingRegistration↔Tenant-Bindung,
 - Ablauf/Cleanup,
 - Statusprojektion.
 
-**Gate:** Doppelklick und paralleler Consume erzeugen exakt einen Tenant und einen Intent-Zustand.
+**Gate:** Doppelklick und paralleler Consume erzeugen exakt einen Tenant und einen Intent-Zustand; ein Prefetch-/Scanner-Aufruf des Magic Links löst weder Consume noch Tenant noch Intent-Statuswechsel aus.
 
 ### Phase G3 — Authentifizierter Asset-Upload
 
 Repository: `gasserwerk`
+
+**VERIFIZIERT:** Die Bildinfrastruktur existiert bereits — sharp-Pipeline mit EXIF-Autorotate, Re-Encoding zu WebP und Metadaten-Strip (Routen `staff/upload-photo`, `upload-logo`) sowie sha256-Content-Hash-Dedup (`asset-ingest`).
+
+**UMBAU:** Diese Phase integriert und vereinheitlicht diese vorhandene Infrastruktur; sie baut kein Greenfield-Bildsystem.
 
 - Bildverarbeitung aus Route extrahieren,
 - Builder-Asset-Endpoint,
@@ -1089,6 +1162,10 @@ Repository: `gasserwerk`
 ### Phase G4 — Atomarer Builder-Katalog
 
 Repository: `gasserwerk`
+
+**VERIFIZIERT:** Die atomare Kataloggrenze existiert bereits (`catalog-atomic-write.ts` / `replaceCatalogWithinTransaction`, genutzt von `catalog-ingest`).
+
+**UMBAU:** Diese Phase setzt auf dieser vorhandenen Grenze auf; es entsteht kein neuer Transaktionsmechanismus.
 
 - Activation-spezifischer Catalog-Use-Case,
 - explizite Linkmatrix,
@@ -1103,13 +1180,14 @@ Repository: `gasserwerk`
 
 Repository: `gasserwerk`
 
-- Tenantprofil,
+- Tenantprofil inkl. expliziter FREE-Tier-Zuweisung,
 - Business Hours,
 - Asset-Refs,
 - Site/Home sicherstellen,
 - Blockprojektion aus Draft,
+- Impressum + Datenschutzseite als CMS-Seiten (Gate `LEGAL_PAGES_INCOMPLETE`),
 - persistierte Saga-Schritte,
-- Readiness,
+- Readiness gegen den gemeinsamen versionierten Requirement-Code-Vertrag (§12.3),
 - Aktivierungsgate,
 - Publish + Widget-Cutover.
 
@@ -1123,7 +1201,7 @@ Repository: `free-builder`
 - E-Mail-/Verifikationszustand,
 - Status und Retry,
 - lokale Assets nach Auth hochladen,
-- konkrete Readiness-Navigation,
+- konkrete Readiness-Navigation über den gemeinsamen versionierten Requirement-Code-Vertrag (§12.3),
 - Erfolg mit Website- und Buchungs-URL,
 - Übergang ins Dashboard.
 
@@ -1181,6 +1259,7 @@ leerer Browser
 - Überlappung,
 - Ende vor Start,
 - Copy-to-team einmalig,
+- Copy aufs Team füllt nur leere/unbestätigte Pläne, überschreibt bestehende Zeiten erst nach Bestätigung,
 - nachträgliche Unabhängigkeit,
 - leerer Staff-Plan blockiert Readiness.
 
@@ -1195,6 +1274,8 @@ leerer Browser
 - Metadatenentfernung,
 - Hash-Dedup,
 - Blobrecovery nach Reload,
+- abgelehnte `navigator.storage.persist()` → sichtbarer UI-Hinweis, kein Datenverlust-Irrtum,
+- Eviction lokaler Bilder → transparente Fehlend-Markierung, Recovery aus Server-Draft,
 - Magic Link auf anderem Gerät.
 
 ### Registrierung
@@ -1202,6 +1283,7 @@ leerer Browser
 - bestehender Account,
 - neuer Account,
 - abgelaufener Link,
+- Prefetch/Scanner-Aufruf des Links ohne Consume (Bestätigungsseite erst bei Submit),
 - doppelter Linkklick,
 - paralleler Consume,
 - Intent gehört zu anderer E-Mail,
@@ -1214,6 +1296,8 @@ leerer Browser
 - Catalog-Konflikt,
 - Page-Publish-Fehler,
 - Widget-Readiness-Fehler,
+- unvollständige rechtliche Mindestangaben → `LEGAL_PAGES_INCOMPLETE` blockiert Publish,
+- Impressum + Datenschutzseite entstehen als echte, danach editierbare CMS-Seiten,
 - keine öffentliche Halbfertig-Site,
 - keine Duplikate bei mehrfacher Aktivierungsanfrage,
 - Dashboard-/Website-/Widget-Parität.
@@ -1271,7 +1355,10 @@ Plattformfehler werden für irreversible oder wiederholt scheiternde Aktivierung
 - KI-Schlüssel oder Providerwahl im Browser,
 - vollständige Medienbibliothek,
 - komplexe Rollen-/Einladungsverwaltung im Builder,
+- Paket-/Capability-Migration im ersten Builder-Publish (eigener Produkt- und Architekturstrang, Paketarchitektur PR #382),
 - automatische erfundene Inhalte.
+
+**ENTSCHEID / Abgrenzung:** Die Plan-/Capability-Migration ist ein eigener grösserer Produkt- und Architekturstrang (Paketarchitektur PR #382) und kein beiläufiger, im Builder-Publish versteckter Bestandteil. Für den ersten Aktivierungsfluss genügt eine explizite, getestete Zuweisung des bestehenden FREE-Tiers (§11.5, Schritt `02 APPLY_TENANT_PROFILE`); die spätere Paketarchitektur wird separat und kontrolliert migriert.
 
 ---
 
@@ -1284,13 +1371,14 @@ Der neue Hauptbutton darf erst `Website veröffentlichen` heissen, wenn alle fol
 3. Team↔Service-Zuordnung wird explizit und atomar gespeichert.
 4. Business Hours besitzen eine eigene zentrale Wahrheit.
 5. Authentifizierter Hero-/Portrait-/Galerie-Upload ist produktionsfähig.
-6. Magic-Link-Consume bindet genau einen Tenant an genau einen Intent.
+6. Magic-Link-Consume bindet genau einen Tenant an genau einen Intent; ein Prefetch-/Scanner-Aufruf des Links erzeugt weder Consume noch Tenant noch Intent-Statuswechsel (Bestätigungsseite, Consume erst bei Submit).
 7. Aktivierung ist idempotent und fortsetzbar.
 8. Site bleibt bis zum vollständigen Cutover nicht öffentlich sichtbar.
 9. Server-Readiness autorisiert die Buchungsfreigabe.
 10. Der Ende-zu-Ende-Pflichtpfad ist auf Desktop und Mobile grün.
 11. Dashboard, Website und Widget zeigen denselben Katalog, dasselbe Team und dieselben Zeiten.
 12. Keine API-Keys, Intake-Secrets oder langlebigen Aktivierungstokens befinden sich im Browser.
+13. Impressum und Datenschutzseite entstehen als echte, danach editierbare CMS-Seiten; unvollständige rechtliche Mindestangaben blockieren den Publish (`LEGAL_PAGES_INCOMPLETE`).
 
 ---
 
