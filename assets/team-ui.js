@@ -1,4 +1,5 @@
-import { copyBusinessHoursToStaff, createStaffDraft, escapeAttr, escapeHtml, getTeamReadinessChecks, getTeamReadinessIssues, removeStaffAndOwnedAssets, setAllBookableServicesForStaff, setStaffService, validateWeeklySchedule, } from "./domain.js";
+import { addRange, copyBusinessHoursToStaff, copyDayToDays, createStaffDraft, escapeAttr, escapeHtml, getTeamReadinessChecks, getTeamReadinessIssues, removeRange, removeStaffAndOwnedAssets, setAllBookableServicesForStaff, setDayClosed, setRangeField, setStaffService, staffHasPersonalHours, validateWeeklySchedule, } from "./domain.js";
+import { STAFF_HOURS_NS, renderScheduleEditor } from "./ui-shared.js";
 const installedStores = new WeakSet();
 let lastShapeFingerprint = "";
 function ensureTeamSurface() {
@@ -43,6 +44,12 @@ function staffHoursStatus(person) {
         return { text: "Arbeitszeiten enthalten Fehler", ready: false };
     return { text: `${openDays} Arbeitstage bestätigt`, ready: true };
 }
+function renderStaffHoursErrors(person) {
+    const errors = validateWeeklySchedule(person.workingHours);
+    if (!errors.length)
+        return "";
+    return `<div class="hours-errors" role="status">${errors.map((error) => `<span>${escapeHtml(error)}</span>`).join("")}</div>`;
+}
 function renderStaffCard(store, person, index) {
     const services = store.snapshot.services;
     const status = staffHoursStatus(person);
@@ -60,7 +67,11 @@ function renderStaffCard(store, person, index) {
     <label class="field"><span>Kurzprofil</span><textarea rows="3" data-staff-field="bio" placeholder="Spezialisierung und Arbeitsweise">${escapeHtml(person.bio)}</textarea></label>
     <label class="switch-row switch-row--compact"><input type="checkbox" data-staff-field="active" ${person.active ? "checked" : ""}><span>Aktiv und für Buchungen vorgesehen</span></label>
     <div class="staff-section"><div class="staff-section__header"><div><strong>Zugeordnete Leistungen</strong><span>Nur diese Leistungen können später bei dieser Person gebucht werden.</span></div><div class="mini-actions"><button type="button" class="text-button" data-team-action="all-services">Alle buchbaren</button><button type="button" class="text-button" data-team-action="no-services">Keine</button></div></div><div class="service-choice-grid">${serviceChoices}</div></div>
-    <div class="staff-hours-row"><div><strong>Arbeitszeiten</strong><span class="${status.ready ? "is-ready" : ""}">${escapeHtml(status.text)}</span></div><button type="button" class="button button--quiet" data-team-action="copy-business-hours">Öffnungszeiten übernehmen</button></div>
+    <div class="staff-section staff-hours">
+      <div class="staff-hours-row"><div><strong>Arbeitszeiten</strong><span class="${status.ready ? "is-ready" : ""}">${escapeHtml(status.text)}</span></div><button type="button" class="button button--quiet" data-team-action="copy-business-hours">Öffnungszeiten übernehmen</button></div>
+      <div class="hours-list hours-list--staff">${renderScheduleEditor(person.workingHours, STAFF_HOURS_NS)}</div>
+      ${renderStaffHoursErrors(person)}
+    </div>
   </article>`;
 }
 export function renderTeam(store) {
@@ -96,6 +107,44 @@ function showTeamToast(message) {
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 4200);
 }
+// Mutate one person's working hours. Scoped by both the staff card and the day-of-week row so the
+// staff namespace stays isolated from the salon opening-hours handler in ui-actions.
+function mutateStaffHours(store, staffId, dow, updater) {
+    store.mutate((draft) => {
+        const person = draft.staff.find((item) => item.clientId === staffId);
+        if (person)
+            person.workingHours = updater(person.workingHours);
+    });
+}
+function handleStaffHourAction(store, button) {
+    const staffId = staffIdFrom(button);
+    const dayRow = button.closest("[data-day-of-week]");
+    if (!staffId || !dayRow)
+        return;
+    const dayOfWeek = Number(dayRow.dataset.dayOfWeek);
+    const action = button.dataset.staffHourAction;
+    if (action === "add-range") {
+        mutateStaffHours(store, staffId, dayOfWeek, (hours) => addRange(hours, dayOfWeek));
+    }
+    else if (action === "remove-range") {
+        const rangeIndex = Number(button.dataset.rangeIndex ?? "0");
+        mutateStaffHours(store, staffId, dayOfWeek, (hours) => removeRange(hours, dayOfWeek, rangeIndex));
+    }
+    else if (action === "copy-day") {
+        const person = store.snapshot.staff.find((item) => item.clientId === staffId);
+        if (!person)
+            return;
+        // Bulk copy is destructive to the other days; confirm before overwriting them.
+        if (!window.confirm("Diese Zeiten auf alle anderen Wochentage übernehmen? Bestehende Zeiten der anderen Tage werden dabei überschrieben."))
+            return;
+        const targets = person.workingHours.map((day) => day.dayOfWeek).filter((day) => day !== dayOfWeek);
+        mutateStaffHours(store, staffId, dayOfWeek, (hours) => copyDayToDays(hours, dayOfWeek, targets));
+    }
+    else {
+        return;
+    }
+    renderTeam(store);
+}
 export function installTeamUi(store, repository) {
     if (installedStores.has(store))
         return;
@@ -115,6 +164,11 @@ export function installTeamUi(store, repository) {
             return;
         if (target.closest('[data-panel-target="publish"]'))
             appendTeamReadiness(store);
+        const hourActionTarget = target.closest("[data-staff-hour-action]");
+        if (hourActionTarget) {
+            handleStaffHourAction(store, hourActionTarget);
+            return;
+        }
         const actionTarget = target.closest("[data-team-action]");
         if (!actionTarget)
             return;
@@ -137,7 +191,13 @@ export function installTeamUi(store, repository) {
         if (action === "no-services")
             store.mutate((draft) => setAllBookableServicesForStaff(draft, staffId, false));
         if (action === "copy-business-hours") {
-            store.mutate((draft) => copyBusinessHoursToStaff(draft, staffId));
+            const person = store.snapshot.staff.find((item) => item.clientId === staffId);
+            if (!person)
+                return;
+            // Never silently destructive: confirm before replacing an existing personal schedule.
+            if (staffHasPersonalHours(person) && !window.confirm("Diese Person hat bereits persönliche Arbeitszeiten. Mit den aktuellen Öffnungszeiten überschreiben?"))
+                return;
+            store.mutate((draft) => { copyBusinessHoursToStaff(draft, staffId, { overwrite: true }); });
             showTeamToast("Die Öffnungszeiten wurden als persönliche Arbeitszeiten übernommen. Sie können später unabhängig verfeinert werden.");
         }
         renderTeam(store);
@@ -169,6 +229,29 @@ export function installTeamUi(store, repository) {
                 const title = staffCard?.querySelector("[data-staff-number]");
                 if (title)
                     title.textContent = `${index + 1}. ${target.value || "Person"}`;
+            }
+            return;
+        }
+        const staffHourField = target.dataset.staffHourField;
+        if (staffHourField) {
+            const dayRow = target.closest("[data-day-of-week]");
+            if (!dayRow)
+                return;
+            const dayOfWeek = Number(dayRow.dataset.dayOfWeek);
+            if (staffHourField === "closed") {
+                if (event.type !== "change" || !(target instanceof HTMLInputElement))
+                    return;
+                const closed = target.checked;
+                mutateStaffHours(store, staffId, dayOfWeek, (hours) => setDayClosed(hours, dayOfWeek, closed));
+                renderTeam(store);
+            }
+            else {
+                if (event.type !== "input")
+                    return;
+                const rangeIndex = Number(target.closest("[data-range-index]")?.dataset.rangeIndex ?? "0");
+                const value = target.value;
+                // No re-render on time edits: the input keeps focus while the model updates.
+                mutateStaffHours(store, staffId, dayOfWeek, (hours) => setRangeField(hours, dayOfWeek, rangeIndex, staffHourField, value));
             }
             return;
         }

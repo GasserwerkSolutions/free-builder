@@ -1,7 +1,5 @@
 import {
   PRESETS,
-  dayName,
-  escapeAttr,
   escapeHtml,
   validateWeeklySchedule,
   type BuilderDraftV2,
@@ -10,7 +8,7 @@ import {
 } from "./domain.js";
 import type { SaveState } from "./store.js";
 import { buildWebsiteHtml } from "./website.js";
-import { getAtPath, type UiContext } from "./ui-shared.js";
+import { BUSINESS_HOURS_NS, getAtPath, renderScheduleEditor, type UiContext } from "./ui-shared.js";
 
 export function bindStaticInputs(context: UiContext): void {
   document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("[data-bind]").forEach((input) => {
@@ -51,15 +49,12 @@ export function renderServices(context: UiContext): void {
 }
 
 export function renderHours(context: UiContext): void {
-  context.hoursList.innerHTML = "";
-  context.store.snapshot.businessHours.forEach((day) => {
-    const range = day.ranges[0] ?? { from: "09:00", to: "18:00" };
-    const row = document.createElement("div");
-    row.className = `hours-row${day.closed ? " is-closed" : ""}`;
-    row.dataset.dayOfWeek = String(day.dayOfWeek);
-    row.innerHTML = `<strong>${escapeHtml(dayName(day.dayOfWeek))}</strong><input type="time" value="${escapeAttr(range.from)}" data-hour-field="from" aria-label="${escapeAttr(dayName(day.dayOfWeek))} öffnet" ${day.closed ? "disabled" : ""}><input type="time" value="${escapeAttr(range.to)}" data-hour-field="to" aria-label="${escapeAttr(dayName(day.dayOfWeek))} schliesst" ${day.closed ? "disabled" : ""}><label><input type="checkbox" data-hour-field="closed" ${day.closed ? "checked" : ""}> Geschlossen</label>`;
-    context.hoursList.appendChild(row);
-  });
+  const schedule = context.store.snapshot.businessHours;
+  context.hoursList.innerHTML = renderScheduleEditor(schedule, BUSINESS_HOURS_NS);
+  const errors = validateWeeklySchedule(schedule);
+  if (errors.length) {
+    context.hoursList.insertAdjacentHTML("beforeend", `<div class="hours-errors" role="status">${errors.map((error) => `<span>${escapeHtml(error)}</span>`).join("")}</div>`);
+  }
 }
 
 export function renderTestimonials(context: UiContext): void {

@@ -23,10 +23,21 @@ export function createStaffDraft(): BuilderStaff {
   };
 }
 
-export function copyBusinessHoursToStaff(draft: BuilderDraftV2, staffClientId: string): void {
+// True when the person already has at least one open day with a range (i.e. not the createClosedSchedule null state).
+export function staffHasPersonalHours(staff: BuilderStaff): boolean {
+  return staff.workingHours.some((day) => !day.closed && day.ranges.length > 0);
+}
+
+export type CopyHoursResult = { applied: boolean; reason?: "ALREADY_HAS_HOURS" };
+
+// Copy the salon opening hours onto a person. Never silently destructive: an existing personal
+// schedule is only replaced when the caller passes overwrite:true (after an explicit confirmation).
+export function copyBusinessHoursToStaff(draft: BuilderDraftV2, staffClientId: string, options: { overwrite?: boolean } = {}): CopyHoursResult {
   const staff = draft.staff.find((person) => person.clientId === staffClientId);
-  if (!staff) return;
+  if (!staff) return { applied: false };
+  if (staffHasPersonalHours(staff) && !options.overwrite) return { applied: false, reason: "ALREADY_HAS_HOURS" };
   staff.workingHours = structuredClone(draft.businessHours);
+  return { applied: true };
 }
 
 export function setAllBookableServicesForStaff(draft: BuilderDraftV2, staffClientId: string, selected: boolean): void {

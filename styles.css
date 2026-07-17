@@ -220,21 +220,29 @@ button { color: inherit; }
 .icon-button:hover { border-color: #d79b9b; color: var(--danger); background: #fff7f7; }
 .empty-state { padding: 28px; border: 1px dashed #c9c2b9; border-radius: 16px; text-align: center; color: var(--muted); }
 
-.hours-list { display: grid; gap: 8px; }
-.hours-row {
+.hours-list { display: grid; gap: 10px; }
+.hours-day {
   display: grid;
-  grid-template-columns: 110px 1fr 1fr auto;
-  gap: 8px;
-  align-items: center;
-  padding: 10px;
+  gap: 10px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--paper);
 }
-.hours-row strong { font-size: 12px; }
-.hours-row input[type="time"] { min-height: 40px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 9px; background: white; }
-.hours-row label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
-.hours-row.is-closed input[type="time"] { opacity: .35; pointer-events: none; }
+.hours-day.is-closed { opacity: .8; }
+.hours-day__head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.hours-day__head strong { font-size: 12px; flex: 1 1 90px; }
+.hours-day__closed { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.hours-day__note { font-size: 12px; color: var(--muted); margin: 0; }
+.hours-day__ranges { display: grid; gap: 8px; }
+.hours-range { display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 8px; align-items: center; }
+.hours-range__input { min-height: 40px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 9px; background: white; }
+.hours-range__sep { text-align: center; color: var(--muted); }
+.hours-range__add { justify-self: start; }
+.icon-button--sm { width: 34px; height: 34px; font-size: 18px; }
+.hours-errors { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid #d78383; border-radius: 12px; background: #fff1f1; }
+.hours-errors span { font-size: 12px; color: #922; }
+.hours-list--staff { gap: 8px; }
 
 .preset-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; margin-bottom: 20px; }
 .preset-card {
@@ -322,8 +330,7 @@ button { color: inherit; }
   .surface-card { padding: 20px 14px; }
   .panel__header--action { display: grid; }
   .field-grid, .field-grid--three, .preset-grid { grid-template-columns: 1fr; }
-  .hours-row { grid-template-columns: 1fr 1fr; }
-  .hours-row strong { grid-column: 1 / -1; }
+  .hours-range { grid-template-columns: 1fr auto 1fr auto; }
   .preview-toolbar { align-items: flex-start; }
   .preview-desk { padding: 12px; }
   #previewFrame { height: 680px; min-height: 680px; border-radius: 12px; }

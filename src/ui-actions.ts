@@ -9,6 +9,7 @@ import {
   type DayOfWeek,
   type ThemePresetName,
 } from "./domain.js";
+import { addRange, copyDayToDays, removeRange, setDayClosed, setRangeField } from "./domain.js";
 import { replaceWithFreshDraft } from "./persistence.js";
 import { buildWebsiteHtml } from "./website.js";
 import { inputValue, setAtPath, type UiContext } from "./ui-shared.js";
@@ -36,6 +37,8 @@ export function handleClick(context: UiContext, event: Event): void {
   if (viewportButton) { setViewport(context, viewportButton.dataset.viewport ?? "desktop"); return; }
   const presetButton = target.closest<HTMLElement>("[data-preset]");
   if (presetButton) { applyPreset(context, presetButton.dataset.preset as ThemePresetName); return; }
+  const hourActionButton = target.closest<HTMLElement>("[data-hour-action]");
+  if (hourActionButton) { handleHourAction(context, hourActionButton); return; }
   const actionButton = target.closest<HTMLElement>("[data-action]");
   if (!actionButton) return;
   const action = actionButton.dataset.action;
@@ -90,22 +93,39 @@ export function handleInput(context: UiContext, event: Event): void {
   const hourRow = target.closest<HTMLElement>("[data-day-of-week]");
   if (hourField && hourRow) {
     const dayOfWeek = Number(hourRow.dataset.dayOfWeek) as DayOfWeek;
-    context.store.mutate((draft) => {
-      const day = draft.businessHours.find((item) => item.dayOfWeek === dayOfWeek);
-      if (!day) return;
-      if (hourField === "closed") {
-        day.closed = target instanceof HTMLInputElement ? target.checked : false;
-        day.ranges = day.closed ? [] : day.ranges.length ? day.ranges : [{ from: "09:00", to: "18:00" }];
-      } else {
-        const range = day.ranges[0] ?? { from: "09:00", to: "18:00" };
-        range[hourField] = target.value;
-        day.ranges = [range, ...day.ranges.slice(1)];
-        day.closed = false;
-      }
-    });
-    if (hourField === "closed") renderHours(context);
-    else hourRow.classList.remove("is-closed");
+    if (hourField === "closed") {
+      const closed = target instanceof HTMLInputElement ? target.checked : false;
+      context.store.mutate((draft) => { draft.businessHours = setDayClosed(draft.businessHours, dayOfWeek, closed); });
+      renderHours(context);
+    } else {
+      const rangeIndex = Number(target.closest<HTMLElement>("[data-range-index]")?.dataset.rangeIndex ?? "0");
+      const value = target.value;
+      // No re-render on time edits: the input keeps focus while the model updates.
+      context.store.mutate((draft) => { draft.businessHours = setRangeField(draft.businessHours, dayOfWeek, rangeIndex, hourField, value); });
+      hourRow.classList.remove("is-closed");
+    }
   }
+}
+
+function handleHourAction(context: UiContext, button: HTMLElement): void {
+  const dayRow = button.closest<HTMLElement>("[data-day-of-week]");
+  if (!dayRow) return;
+  const dayOfWeek = Number(dayRow.dataset.dayOfWeek) as DayOfWeek;
+  const action = button.dataset.hourAction;
+  if (action === "add-range") {
+    context.store.mutate((draft) => { draft.businessHours = addRange(draft.businessHours, dayOfWeek); });
+  } else if (action === "remove-range") {
+    const rangeIndex = Number(button.dataset.rangeIndex ?? "0");
+    context.store.mutate((draft) => { draft.businessHours = removeRange(draft.businessHours, dayOfWeek, rangeIndex); });
+  } else if (action === "copy-day") {
+    // Bulk copy is destructive to the other days; confirm before overwriting them.
+    if (!window.confirm("Diese Zeiten auf alle anderen Wochentage übernehmen? Bestehende Zeiten der anderen Tage werden dabei überschrieben.")) return;
+    const targets = context.store.snapshot.businessHours.map((day) => day.dayOfWeek).filter((day) => day !== dayOfWeek);
+    context.store.mutate((draft) => { draft.businessHours = copyDayToDays(draft.businessHours, dayOfWeek, targets); });
+  } else {
+    return;
+  }
+  renderHours(context);
 }
 
 function addService(context: UiContext): void {
