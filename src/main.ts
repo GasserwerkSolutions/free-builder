@@ -2,6 +2,7 @@ import { IndexedDbDraftRepository, MemoryDraftRepository, loadOrCreateDraft, typ
 import { LEGACY_STORAGE_KEY, createDefaultDraft, migrateV1ToV2 } from "./domain.js";
 import { BuilderStore } from "./store.js";
 import { BuilderUi } from "./ui.js";
+import { installTeamUi } from "./team-ui.js";
 
 async function start(): Promise<void> {
   let repository: DraftRepository = new IndexedDbDraftRepository();
@@ -27,6 +28,7 @@ async function start(): Promise<void> {
   }
   const store = new BuilderStore(loaded.draft, repository);
   new BuilderUi(store, repository).init({ ...loaded, volatileStorage });
+  installTeamUi(store, repository);
 }
 
 void start().catch((error) => {

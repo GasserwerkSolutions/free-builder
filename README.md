@@ -10,8 +10,8 @@ Die Oberfläche bleibt eine statische Anwendung, ihre Logik ist aber in native T
 - deterministische V1→V2-Migration
 - IndexedDB für Drafts und spätere Bild-Blobs
 - `localStorage` enthält nur die aktive `draftId`
-- unveränderliche `clientId` für Services und spätere Relationen
-- eingebaute Wochenplan-Validierung
+- unveränderliche `clientId` für Services, Mitarbeitende und Relationen
+- eingebaute Wochenplan- und Team-Readiness-Validierung
 - Node-Test-Runner ohne zusätzliches Testframework
 - reproduzierbarer TypeScript-Build mit gepinnter Version
 
@@ -26,6 +26,9 @@ Enthalten:
 - gemeinsamer Service- und Preiskatalog
 - Dauer, Preisart und Buchbarkeit pro Leistung
 - strukturierter Wochenplan mit mehrspannigem Datenvertrag
+- Teamkarten mit expliziter Mitarbeiter–Leistungs-Zuordnung
+- persönliche Arbeitszeiten ohne stillen Default
+- Team-Projektion in Website und JSON-LD
 - vier kuratierte Designrichtungen
 - optional bis zu drei manuelle Kundenstimmen
 - lokales Autosave in IndexedDB
@@ -35,7 +38,6 @@ Enthalten:
 
 Bewusst noch nicht als produktiv fertig bezeichnet:
 
-- Team und Staff↔Service-Zuordnung
 - lokale Bildauswahl und Upload
 - Magic-Link-Aktivierung
 - Tenant-/CMS-/Booking-Synchronisierung
