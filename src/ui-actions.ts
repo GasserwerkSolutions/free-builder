@@ -17,6 +17,7 @@ import {
   bindStaticInputs,
   renderDynamicControls,
   renderHours,
+  renderHoursErrors,
   renderPresets,
   renderPreview,
   renderServices,
@@ -100,9 +101,11 @@ export function handleInput(context: UiContext, event: Event): void {
     } else {
       const rangeIndex = Number(target.closest<HTMLElement>("[data-range-index]")?.dataset.rangeIndex ?? "0");
       const value = target.value;
-      // No re-render on time edits: the input keeps focus while the model updates.
+      // No full re-render on time edits (keeps the focused input); readiness is refreshed by the
+      // store subscription, and the inline error list is updated in place below.
       context.store.mutate((draft) => { draft.businessHours = setRangeField(draft.businessHours, dayOfWeek, rangeIndex, hourField, value); });
       hourRow.classList.remove("is-closed");
+      renderHoursErrors(context);
     }
   }
 }

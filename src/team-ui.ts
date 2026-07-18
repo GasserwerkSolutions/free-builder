@@ -73,6 +73,20 @@ function renderStaffHoursErrors(person: BuilderStaff): string {
   return `<div class="hours-errors" role="status">${errors.map((error) => `<span>${escapeHtml(error)}</span>`).join("")}</div>`;
 }
 
+// Refresh a single staff card's validation surfaces in place after a time edit: the person's status
+// indicator and the inline error list. The card's inputs are not rebuilt, so the focused field stays.
+function updateStaffHoursValidity(staffCard: HTMLElement, person: BuilderStaff): void {
+  const status = staffHoursStatus(person);
+  const statusEl = staffCard.querySelector<HTMLElement>(".staff-hours-row span");
+  if (statusEl) { statusEl.textContent = status.text; statusEl.className = status.ready ? "is-ready" : ""; }
+  const errors = validateWeeklySchedule(person.workingHours);
+  const existing = staffCard.querySelector<HTMLElement>(".hours-errors");
+  if (!errors.length) { existing?.remove(); return; }
+  const inner = errors.map((error) => `<span>${escapeHtml(error)}</span>`).join("");
+  if (existing) { existing.innerHTML = inner; return; }
+  staffCard.querySelector<HTMLElement>(".staff-hours")?.insertAdjacentHTML("beforeend", `<div class="hours-errors" role="status">${inner}</div>`);
+}
+
 function renderStaffCard(store: BuilderStore, person: BuilderStaff, index: number): string {
   const services = store.snapshot.services;
   const status = staffHoursStatus(person);
@@ -251,8 +265,11 @@ export function installTeamUi(store: BuilderStore, repository: DraftRepository):
         if (event.type !== "input") return;
         const rangeIndex = Number(target.closest<HTMLElement>("[data-range-index]")?.dataset.rangeIndex ?? "0");
         const value = target.value;
-        // No re-render on time edits: the input keeps focus while the model updates.
+        // No card re-render on time edits (keeps the focused input); team readiness is refreshed by
+        // the store subscription, and this card's status + error list are updated in place below.
         mutateStaffHours(store, staffId, dayOfWeek, (hours) => setRangeField(hours, dayOfWeek, rangeIndex, staffHourField, value));
+        const person = store.snapshot.staff.find((item) => item.clientId === staffId);
+        if (person && staffCard) updateStaffHoursValidity(staffCard, person);
       }
       return;
     }

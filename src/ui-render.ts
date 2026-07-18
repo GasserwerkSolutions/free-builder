@@ -49,12 +49,19 @@ export function renderServices(context: UiContext): void {
 }
 
 export function renderHours(context: UiContext): void {
-  const schedule = context.store.snapshot.businessHours;
-  context.hoursList.innerHTML = renderScheduleEditor(schedule, BUSINESS_HOURS_NS);
-  const errors = validateWeeklySchedule(schedule);
-  if (errors.length) {
-    context.hoursList.insertAdjacentHTML("beforeend", `<div class="hours-errors" role="status">${errors.map((error) => `<span>${escapeHtml(error)}</span>`).join("")}</div>`);
-  }
+  context.hoursList.innerHTML = renderScheduleEditor(context.store.snapshot.businessHours, BUSINESS_HOURS_NS);
+  renderHoursErrors(context);
+}
+
+// Refresh only the opening-hours validation list in place. Used after a time edit so the focused
+// time input is never rebuilt (no full renderHours), keeping the caret where it is.
+export function renderHoursErrors(context: UiContext): void {
+  const errors = validateWeeklySchedule(context.store.snapshot.businessHours);
+  const existing = context.hoursList.querySelector<HTMLElement>(".hours-errors");
+  if (!errors.length) { existing?.remove(); return; }
+  const inner = errors.map((error) => `<span>${escapeHtml(error)}</span>`).join("");
+  if (existing) existing.innerHTML = inner;
+  else context.hoursList.insertAdjacentHTML("beforeend", `<div class="hours-errors" role="status">${inner}</div>`);
 }
 
 export function renderTestimonials(context: UiContext): void {

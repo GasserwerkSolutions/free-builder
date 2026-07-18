@@ -3,7 +3,7 @@ import { addRange, copyDayToDays, removeRange, setDayClosed, setRangeField } fro
 import { replaceWithFreshDraft } from "./persistence.js";
 import { buildWebsiteHtml } from "./website.js";
 import { inputValue, setAtPath } from "./ui-shared.js";
-import { bindStaticInputs, renderDynamicControls, renderHours, renderPreview, renderServices, renderTestimonials, setViewport, showPanel, showToast, syncPresetInputs, updateReadiness, } from "./ui-render.js";
+import { bindStaticInputs, renderDynamicControls, renderHours, renderHoursErrors, renderPreview, renderServices, renderTestimonials, setViewport, showPanel, showToast, syncPresetInputs, updateReadiness, } from "./ui-render.js";
 export function handleClick(context, event) {
     const target = event.target;
     if (!(target instanceof Element))
@@ -110,9 +110,11 @@ export function handleInput(context, event) {
         else {
             const rangeIndex = Number(target.closest("[data-range-index]")?.dataset.rangeIndex ?? "0");
             const value = target.value;
-            // No re-render on time edits: the input keeps focus while the model updates.
+            // No full re-render on time edits (keeps the focused input); readiness is refreshed by the
+            // store subscription, and the inline error list is updated in place below.
             context.store.mutate((draft) => { draft.businessHours = setRangeField(draft.businessHours, dayOfWeek, rangeIndex, hourField, value); });
             hourRow.classList.remove("is-closed");
+            renderHoursErrors(context);
         }
     }
 }
