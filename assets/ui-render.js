@@ -1,6 +1,6 @@
-import { PRESETS, dayName, escapeAttr, escapeHtml, validateWeeklySchedule, } from "./domain.js";
+import { PRESETS, escapeHtml, validateWeeklySchedule, } from "./domain.js";
 import { buildWebsiteHtml } from "./website.js";
-import { getAtPath } from "./ui-shared.js";
+import { BUSINESS_HOURS_NS, getAtPath, renderScheduleEditor } from "./ui-shared.js";
 export function bindStaticInputs(context) {
     document.querySelectorAll("[data-bind]").forEach((input) => {
         const value = getAtPath(context.store.snapshot, input.dataset.bind ?? "");
@@ -44,15 +44,23 @@ export function renderServices(context) {
     });
 }
 export function renderHours(context) {
-    context.hoursList.innerHTML = "";
-    context.store.snapshot.businessHours.forEach((day) => {
-        const range = day.ranges[0] ?? { from: "09:00", to: "18:00" };
-        const row = document.createElement("div");
-        row.className = `hours-row${day.closed ? " is-closed" : ""}`;
-        row.dataset.dayOfWeek = String(day.dayOfWeek);
-        row.innerHTML = `<strong>${escapeHtml(dayName(day.dayOfWeek))}</strong><input type="time" value="${escapeAttr(range.from)}" data-hour-field="from" aria-label="${escapeAttr(dayName(day.dayOfWeek))} öffnet" ${day.closed ? "disabled" : ""}><input type="time" value="${escapeAttr(range.to)}" data-hour-field="to" aria-label="${escapeAttr(dayName(day.dayOfWeek))} schliesst" ${day.closed ? "disabled" : ""}><label><input type="checkbox" data-hour-field="closed" ${day.closed ? "checked" : ""}> Geschlossen</label>`;
-        context.hoursList.appendChild(row);
-    });
+    context.hoursList.innerHTML = renderScheduleEditor(context.store.snapshot.businessHours, BUSINESS_HOURS_NS);
+    renderHoursErrors(context);
+}
+// Refresh only the opening-hours validation list in place. Used after a time edit so the focused
+// time input is never rebuilt (no full renderHours), keeping the caret where it is.
+export function renderHoursErrors(context) {
+    const errors = validateWeeklySchedule(context.store.snapshot.businessHours);
+    const existing = context.hoursList.querySelector(".hours-errors");
+    if (!errors.length) {
+        existing?.remove();
+        return;
+    }
+    const inner = errors.map((error) => `<span>${escapeHtml(error)}</span>`).join("");
+    if (existing)
+        existing.innerHTML = inner;
+    else
+        context.hoursList.insertAdjacentHTML("beforeend", `<div class="hours-errors" role="status">${inner}</div>`);
 }
 export function renderTestimonials(context) {
     context.testimonialList.innerHTML = "";
