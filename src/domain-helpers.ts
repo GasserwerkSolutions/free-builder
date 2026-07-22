@@ -47,4 +47,26 @@ export function escapeHtml(value: unknown): string {
 export function escapeAttr(value: unknown): string { return escapeHtml(value).replace(/`/g, "&#096;"); }
 export function safeJson(value: unknown): string { return JSON.stringify(value, (_key, item) => item === undefined ? undefined : item).replace(/</g, "\\u003c"); }
 export function isSafeHttpUrl(value: unknown): boolean { return normalizeHttpUrl(value) !== null; }
-export function cloneDraft(draft: BuilderDraftV2): BuilderDraftV2 { return structuredClone(draft); }
+export function cloneDraft(draft: Readonly<BuilderDraftV2>): BuilderDraftV2 { return structuredClone(draft) as BuilderDraftV2; }
+
+// Dot-path access into the draft. Shared by the input bindings and by the mutation verifier, so both
+// address a draft field the exact same way.
+export function getAtPath(object: unknown, path: string): unknown {
+  return path.split(".").reduce<unknown>((value, key) =>
+    value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined,
+  object);
+}
+
+export function setAtPath(object: object, path: string, value: unknown): void {
+  const keys = path.split(".");
+  const last = keys.pop();
+  if (!last) return;
+  let target = object as Record<string, unknown>;
+  for (const key of keys) {
+    const next = target[key];
+    if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error(`INVALID_BIND_PATH:${path}`);
+    target = next as Record<string, unknown>;
+  }
+  if (!(last in target)) throw new Error(`UNKNOWN_BIND_PATH:${path}`);
+  target[last] = value;
+}

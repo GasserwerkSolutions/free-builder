@@ -1,6 +1,6 @@
-import { PRESETS, escapeHtml, validateWeeklySchedule, } from "./domain.js";
+import { PRESETS, escapeHtml, getAtPath, validateWeeklySchedule, } from "./domain.js";
 import { buildWebsiteHtml } from "./website.js";
-import { BUSINESS_HOURS_NS, getAtPath, renderScheduleEditor } from "./ui-shared.js";
+import { BUSINESS_HOURS_NS, renderScheduleEditor } from "./ui-shared.js";
 export function bindStaticInputs(context) {
     document.querySelectorAll("[data-bind]").forEach((input) => {
         const value = getAtPath(context.store.snapshot, input.dataset.bind ?? "");

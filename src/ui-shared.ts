@@ -44,26 +44,6 @@ export function createUiContext(store: BuilderStore, repository: DraftRepository
   };
 }
 
-export function getAtPath(object: unknown, path: string): unknown {
-  return path.split(".").reduce<unknown>((value, key) =>
-    value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined,
-  object);
-}
-
-export function setAtPath(object: object, path: string, value: unknown): void {
-  const keys = path.split(".");
-  const last = keys.pop();
-  if (!last) return;
-  let target = object as Record<string, unknown>;
-  for (const key of keys) {
-    const next = target[key];
-    if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error(`INVALID_BIND_PATH:${path}`);
-    target = next as Record<string, unknown>;
-  }
-  if (!(last in target)) throw new Error(`UNKNOWN_BIND_PATH:${path}`);
-  target[last] = value;
-}
-
 export function inputValue(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): string | boolean {
   return input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input.value;
 }

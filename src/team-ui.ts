@@ -15,9 +15,11 @@ import {
   setStaffService,
   staffHasPersonalHours,
   validateWeeklySchedule,
+  type BuilderDraftV2,
   type BuilderStaff,
   type DayOfWeek,
 } from "./domain.js";
+import type { StaffEditableField } from "./draft-mutations.js";
 import type { DraftRepository } from "./persistence.js";
 import type { BuilderStore } from "./store.js";
 import { STAFF_HOURS_NS, renderScheduleEditor } from "./ui-shared.js";
@@ -149,12 +151,19 @@ function showTeamToast(message: string): void {
 }
 
 // Mutate one person's working hours. Scoped by both the staff card and the day-of-week row so the
-// staff namespace stays isolated from the salon opening-hours handler in ui-actions.
-function mutateStaffHours(store: BuilderStore, staffId: string, dow: DayOfWeek, updater: (hours: BuilderStaff["workingHours"]) => BuilderStaff["workingHours"]): void {
+// staff namespace stays isolated from the salon opening-hours handler in ui-actions. The declared
+// intent is that person's workingHours only — a write that also touched businessHours is rejected.
+function mutateStaffHours(store: BuilderStore, staffId: string, updater: (hours: BuilderStaff["workingHours"]) => BuilderStaff["workingHours"], label: string, key?: string): void {
   store.mutate((draft) => {
     const person = draft.staff.find((item) => item.clientId === staffId);
     if (person) person.workingHours = updater(person.workingHours);
-  });
+  }, { intent: { type: "set-staff-hours", staffClientId: staffId }, history: key ? { key, label } : { label } });
+}
+
+// serviceClientIds is the only truth about who may perform what, so an assignment edit declares
+// exactly that list as its scope — it may not drag a service definition or a schedule along.
+function mutateStaffServices(store: BuilderStore, staffId: string, mutator: (draft: BuilderDraftV2) => void, label: string): void {
+  store.mutate(mutator, { intent: { type: "set-staff-services", staffClientId: staffId }, history: { label } });
 }
 
 function handleStaffHourAction(store: BuilderStore, button: HTMLElement): void {
@@ -164,17 +173,17 @@ function handleStaffHourAction(store: BuilderStore, button: HTMLElement): void {
   const dayOfWeek = Number(dayRow.dataset.dayOfWeek) as DayOfWeek;
   const action = button.dataset.staffHourAction;
   if (action === "add-range") {
-    mutateStaffHours(store, staffId, dayOfWeek, (hours) => addRange(hours, dayOfWeek));
+    mutateStaffHours(store, staffId, (hours) => addRange(hours, dayOfWeek), "Arbeitszeit-Spanne hinzugefügt");
   } else if (action === "remove-range") {
     const rangeIndex = Number(button.dataset.rangeIndex ?? "0");
-    mutateStaffHours(store, staffId, dayOfWeek, (hours) => removeRange(hours, dayOfWeek, rangeIndex));
+    mutateStaffHours(store, staffId, (hours) => removeRange(hours, dayOfWeek, rangeIndex), "Arbeitszeit-Spanne entfernt");
   } else if (action === "copy-day") {
     const person = store.snapshot.staff.find((item) => item.clientId === staffId);
     if (!person) return;
     // Bulk copy is destructive to the other days; confirm before overwriting them.
     if (!window.confirm("Diese Zeiten auf alle anderen Wochentage übernehmen? Bestehende Zeiten der anderen Tage werden dabei überschrieben.")) return;
     const targets = person.workingHours.map((day) => day.dayOfWeek).filter((day) => day !== dayOfWeek);
-    mutateStaffHours(store, staffId, dayOfWeek, (hours) => copyDayToDays(hours, dayOfWeek, targets));
+    mutateStaffHours(store, staffId, (hours) => copyDayToDays(hours, dayOfWeek, targets), "Arbeitszeiten auf andere Tage übernommen");
   } else {
     return;
   }
@@ -205,24 +214,28 @@ export function installTeamUi(store: BuilderStore, repository: DraftRepository):
     const action = actionTarget.dataset.teamAction;
     const staffId = staffIdFrom(actionTarget);
     if (action === "add-staff") {
-      store.mutate((draft) => { draft.staff.push(createStaffDraft()); });
+      // Built outside the mutator so the intent can name the person it is about to insert.
+      const person = createStaffDraft();
+      store.mutate((draft) => { draft.staff.push(person); }, { intent: { type: "insert-collection-item", collection: "staff", clientId: person.clientId }, history: { label: "Person hinzugefügt" } });
       renderTeam(store);
       return;
     }
     if (!staffId) return;
     if (action === "remove-staff") {
       const assetIds = store.snapshot.assets.filter((asset) => asset.ownerClientId === staffId).map((asset) => asset.localId);
-      store.mutate((draft) => removeStaffAndOwnedAssets(draft, staffId));
+      store.mutate((draft) => removeStaffAndOwnedAssets(draft, staffId), { intent: { type: "remove-collection-item", collection: "staff", clientId: staffId }, history: { label: "Person entfernt" } });
       void repository.deleteAssetBlobs(assetIds).catch((error) => console.error("Staff asset cleanup failed.", error));
     }
-    if (action === "all-services") store.mutate((draft) => setAllBookableServicesForStaff(draft, staffId, true));
-    if (action === "no-services") store.mutate((draft) => setAllBookableServicesForStaff(draft, staffId, false));
+    if (action === "all-services") mutateStaffServices(store, staffId, (draft) => setAllBookableServicesForStaff(draft, staffId, true), "Alle buchbaren Leistungen zugeordnet");
+    if (action === "no-services") mutateStaffServices(store, staffId, (draft) => setAllBookableServicesForStaff(draft, staffId, false), "Leistungszuordnung geleert");
     if (action === "copy-business-hours") {
       const person = store.snapshot.staff.find((item) => item.clientId === staffId);
       if (!person) return;
       // Never silently destructive: confirm before replacing an existing personal schedule.
       if (staffHasPersonalHours(person) && !window.confirm("Diese Person hat bereits persönliche Arbeitszeiten. Mit den aktuellen Öffnungszeiten überschreiben?")) return;
-      store.mutate((draft) => { copyBusinessHoursToStaff(draft, staffId, { overwrite: true }); });
+      // Copying reads businessHours but may only write this person's workingHours; the two schedules
+      // stay separate truths and the mutation verifier enforces that.
+      store.mutate((draft) => { copyBusinessHoursToStaff(draft, staffId, { overwrite: true }); }, { intent: { type: "set-staff-hours", staffClientId: staffId }, history: { label: "Öffnungszeiten als Arbeitszeiten übernommen" } });
       showTeamToast("Die Öffnungszeiten wurden als persönliche Arbeitszeiten übernommen. Sie können später unabhängig verfeinert werden.");
     }
     renderTeam(store);
@@ -234,7 +247,7 @@ export function installTeamUi(store: BuilderStore, repository: DraftRepository):
     const staffCard = target.closest<HTMLElement>("[data-staff-card]");
     const staffId = staffCard?.dataset.staffId ?? "";
     if (!staffId) return;
-    const field = target.dataset.staffField as "name" | "role" | "email" | "bio" | "active" | undefined;
+    const field = target.dataset.staffField as StaffEditableField | undefined;
     if (field) {
       const checkbox = target instanceof HTMLInputElement && target.type === "checkbox";
       if ((checkbox && event.type !== "change") || (!checkbox && event.type !== "input")) return;
@@ -243,7 +256,7 @@ export function installTeamUi(store: BuilderStore, repository: DraftRepository):
         if (!person) return;
         if (field === "active") person.active = checkbox ? target.checked : person.active;
         else person[field] = target.value;
-      });
+      }, { intent: { type: "set-staff-field", staffClientId: staffId, field }, history: { key: `staff:${staffId}:${field}`, label: "Person bearbeitet" } });
       if (field === "name") {
         const index = store.snapshot.staff.findIndex((person) => person.clientId === staffId);
         const title = staffCard?.querySelector<HTMLElement>("[data-staff-number]");
@@ -259,7 +272,7 @@ export function installTeamUi(store: BuilderStore, repository: DraftRepository):
       if (staffHourField === "closed") {
         if (event.type !== "change" || !(target instanceof HTMLInputElement)) return;
         const closed = target.checked;
-        mutateStaffHours(store, staffId, dayOfWeek, (hours) => setDayClosed(hours, dayOfWeek, closed));
+        mutateStaffHours(store, staffId, (hours) => setDayClosed(hours, dayOfWeek, closed), closed ? "Arbeitstag geschlossen" : "Arbeitstag geöffnet");
         renderTeam(store);
       } else {
         if (event.type !== "input") return;
@@ -267,7 +280,7 @@ export function installTeamUi(store: BuilderStore, repository: DraftRepository):
         const value = target.value;
         // No card re-render on time edits (keeps the focused input); team readiness is refreshed by
         // the store subscription, and this card's status + error list are updated in place below.
-        mutateStaffHours(store, staffId, dayOfWeek, (hours) => setRangeField(hours, dayOfWeek, rangeIndex, staffHourField, value));
+        mutateStaffHours(store, staffId, (hours) => setRangeField(hours, dayOfWeek, rangeIndex, staffHourField, value), "Arbeitszeiten angepasst", `staff-hours:${staffId}:${dayOfWeek}:${rangeIndex}:${staffHourField}`);
         const person = store.snapshot.staff.find((item) => item.clientId === staffId);
         if (person && staffCard) updateStaffHoursValidity(staffCard, person);
       }
@@ -275,7 +288,8 @@ export function installTeamUi(store: BuilderStore, repository: DraftRepository):
     }
     const serviceId = target.dataset.staffService;
     if (serviceId && event.type === "change" && target instanceof HTMLInputElement) {
-      store.mutate((draft) => setStaffService(draft, staffId, serviceId, target.checked));
+      const selected = target.checked;
+      mutateStaffServices(store, staffId, (draft) => setStaffService(draft, staffId, serviceId, selected), selected ? "Leistung zugeordnet" : "Leistungszuordnung entfernt");
     }
   };
   document.addEventListener("input", handleField);

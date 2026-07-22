@@ -1,6 +1,7 @@
 import {
   PRESETS,
   escapeHtml,
+  getAtPath,
   validateWeeklySchedule,
   type BuilderDraftV2,
   type BuilderService,
@@ -8,7 +9,7 @@ import {
 } from "./domain.js";
 import type { SaveState } from "./store.js";
 import { buildWebsiteHtml } from "./website.js";
-import { BUSINESS_HOURS_NS, getAtPath, renderScheduleEditor, type UiContext } from "./ui-shared.js";
+import { BUSINESS_HOURS_NS, renderScheduleEditor, type UiContext } from "./ui-shared.js";
 
 export function bindStaticInputs(context: UiContext): void {
   document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("[data-bind]").forEach((input) => {
