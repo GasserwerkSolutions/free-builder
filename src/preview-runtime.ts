@@ -20,17 +20,30 @@ import { buildWebsiteHtml } from "./website.js";
 const COALESCE_MS = 40;
 /** How long a patch may stay unanswered before the preview is rebuilt instead. */
 const PATCH_TIMEOUT_MS = 350;
-/** How long a fresh document may take to report itself ready. Retried exactly once. */
+/** How long a fresh document may take to report itself ready. Retried exactly once by itself. */
 const READY_TIMEOUT_MS = 2_000;
+/**
+ * How many unsent edits may pile up while the preview is not answering. The queue only exists to
+ * plan the next patch; past this many entries planning one is pointless anyway, so the queue is
+ * dropped and the next flush rebuilds from the draft instead of growing without a bound.
+ */
+const MAX_PENDING_MUTATIONS = 200;
 
 type Timer = ReturnType<typeof setTimeout>;
 type InFlight = { requestId: string; revision: number; timeout: Timer };
+
+/**
+ * "stale": the preview document is not answering and no longer shows the current draft.
+ * "live": it answered again and is back in sync. Reported only on a change, never repeatedly.
+ */
+export type PreviewStatus = "stale" | "live";
 
 export type PreviewRuntimeOptions = {
   frame: HTMLIFrameElement;
   readDraft: () => Readonly<BuilderDraftV2>;
   readRevision: () => number;
   onNavigate?: (target: PreviewTarget) => void;
+  onStatus?: (status: PreviewStatus) => void;
   parentOrigin?: string;
   createId?: () => string;
 };
@@ -42,13 +55,17 @@ export type PreviewRuntimeOptions = {
  *  - exactly one request may be in flight, so the preview can never apply two updates out of order;
  *  - every update names the revision it builds on, so a document that missed one refuses the patch;
  *  - anything unexpected — a rejected patch, a silent document, an unplannable change — degrades to
- *    a full render, which is always correct because it is the same renderer the export uses.
+ *    a full render, which is always correct because it is the same renderer the export uses;
+ *  - and no failure is allowed to become an end state: a preview that has given up says so and tries
+ *    again on the next edit, because a silently frozen preview shows something other than what the
+ *    export would produce — exactly the damage this protocol exists to prevent.
  */
 export class PreviewRuntime {
   private readonly frame: HTMLIFrameElement;
   private readonly readDraft: () => Readonly<BuilderDraftV2>;
   private readonly readRevision: () => number;
   private readonly onNavigate: ((target: PreviewTarget) => void) | null;
+  private readonly onStatus: ((status: PreviewStatus) => void) | null;
   private readonly parentOrigin: string;
   private readonly createId: () => string;
   private instanceIdValue = "";
@@ -59,6 +76,10 @@ export class PreviewRuntime {
   private fullRenderRevision = 0;
   private scroll: PreviewScrollState | null = null;
   private ready = false;
+  /** The document did not report itself ready within its retries. Set until one finally does. */
+  private readyExhausted = false;
+  /** Whether the user has already been told about the current stale episode. */
+  private staleReported = false;
   private pending: DraftMutation[] = [];
   private inFlight: InFlight | null = null;
   private coalesceTimer: Timer | null = null;
@@ -70,6 +91,7 @@ export class PreviewRuntime {
     this.readDraft = options.readDraft;
     this.readRevision = options.readRevision;
     this.onNavigate = options.onNavigate ?? null;
+    this.onStatus = options.onStatus ?? null;
     this.parentOrigin = options.parentOrigin ?? resolveParentOrigin(typeof location === "undefined" ? undefined : location.origin);
     this.createId = options.createId ?? defaultId;
     this.desiredRevisionValue = this.readRevision();
@@ -81,6 +103,10 @@ export class PreviewRuntime {
   get desiredRevision(): number { return this.desiredRevisionValue; }
   get hasInFlightRequest(): boolean { return this.inFlight !== null; }
   get scrollState(): PreviewScrollState | null { return this.scroll; }
+  /** True while the preview document is not answering and the shown page may be out of date. */
+  get isStale(): boolean { return this.readyExhausted; }
+  /** Edits waiting for the preview. Bounded by MAX_PENDING_MUTATIONS. */
+  get pendingCount(): number { return this.pending.length; }
 
   start(): void { this.startFullRender(1); }
   /** Rebuild from scratch. Used after an authoritative replacement of the draft. */
@@ -90,7 +116,12 @@ export class PreviewRuntime {
     if (this.destroyed) return;
     this.desiredRevisionValue = Math.max(this.desiredRevisionValue, mutation.revision);
     this.pending.push(mutation);
-    if (this.ready) this.scheduleFlush(COALESCE_MS);
+    // The queue exists only to plan the next patch. Past the bound, dropping it costs nothing: the
+    // desired revision still stands, and a flush without plannable mutations rebuilds the preview.
+    if (this.pending.length > MAX_PENDING_MUTATIONS) this.pending = [];
+    // Always schedule — the flush decides whether this is a patch or a fresh attempt at a document
+    // that stopped answering. Gating this on `ready` is what used to freeze the preview for good.
+    this.scheduleFlush(COALESCE_MS);
   }
 
   /** Returns true when the message belonged to this preview, whether or not it changed anything. */
@@ -127,6 +158,8 @@ export class PreviewRuntime {
     if (this.ready || revision !== this.fullRenderRevision || revision < this.appliedRevisionValue) return true;
     this.clearReadyTimer();
     this.ready = true;
+    this.readyExhausted = false;
+    if (this.staleReported) { this.staleReported = false; this.onStatus?.("live"); }
     this.appliedRevisionValue = revision;
     this.processedRevisionValue = revision;
     this.pending = this.pending.filter((mutation) => mutation.revision > revision);
@@ -147,12 +180,21 @@ export class PreviewRuntime {
   }
 
   private scheduleFlush(delay: number): void {
-    if (this.destroyed || !this.ready || this.inFlight || this.coalesceTimer) return;
+    if (this.destroyed || this.inFlight || this.coalesceTimer) return;
+    // While a render is still waiting for its "ready" there is nothing to do; once it has given up,
+    // the next edit is exactly what should start a new attempt.
+    if (!this.ready && !this.readyExhausted) return;
     this.coalesceTimer = setTimeout(() => { this.coalesceTimer = null; this.flushPending(); }, delay);
   }
 
   private flushPending(): void {
-    if (this.destroyed || !this.ready || this.inFlight) return;
+    if (this.destroyed || this.inFlight) return;
+    if (!this.ready) {
+      // The document never answered and the automatic retries are used up. This edit buys it exactly
+      // one more attempt — no timer of our own, so a permanently broken document cannot spin.
+      if (this.readyExhausted) this.startFullRender(0);
+      return;
+    }
     const mutations = this.pending.filter((mutation) => mutation.revision > this.processedRevisionValue);
     if (!mutations.length) {
       if (this.desiredRevisionValue > this.processedRevisionValue) this.startFullRender(1);
@@ -209,6 +251,7 @@ export class PreviewRuntime {
     this.coalesceTimer = null;
     this.clearReadyTimer();
     this.ready = false;
+    this.readyExhausted = false;
     this.renderGenerationValue += 1;
     this.instanceIdValue = this.createId();
     const revision = this.readRevision();
@@ -228,9 +271,15 @@ export class PreviewRuntime {
     this.readyTimer = setTimeout(() => {
       if (this.destroyed || this.ready || generation !== this.renderGenerationValue || instanceId !== this.instanceIdValue) return;
       this.readyTimer = null;
-      // Exactly one retry. A document that stays silent twice is not going to answer, and an endless
-      // rebuild loop would be worse than a stale preview.
-      if (readyRetries > 0) this.startFullRender(readyRetries - 1);
+      // Exactly one retry on our own. A document that stays silent twice is not going to answer by
+      // being asked again immediately, and an endless rebuild loop would be worse than a stale
+      // preview. But silence is not an end state either: the preview says it is out of date and the
+      // next edit starts one more attempt (see flushPending).
+      if (readyRetries > 0) { this.startFullRender(readyRetries - 1); return; }
+      this.readyExhausted = true;
+      if (this.staleReported) return;
+      this.staleReported = true;
+      this.onStatus?.("stale");
     }, READY_TIMEOUT_MS);
   }
 

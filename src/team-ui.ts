@@ -236,7 +236,7 @@ export function installTeamUi(store: BuilderStore, repository: DraftRepository):
       if (staffHasPersonalHours(person) && !window.confirm("Diese Person hat bereits persönliche Arbeitszeiten. Mit den aktuellen Öffnungszeiten überschreiben?")) return;
       // Copying reads businessHours but may only write this person's workingHours; the two schedules
       // stay separate truths and the mutation verifier enforces that.
-      safeMutate(store, (draft) => { copyBusinessHoursToStaff(draft, staffId, { overwrite: true }); }, { intent: { type: "set-staff-hours", staffClientId: staffId }, history: { label: "Öffnungszeiten als Arbeitszeiten übernommen" } });
+      safeMutate(store, (draft) => { copyBusinessHoursToStaff(draft, staffId, { overwrite: true }); }, { intent: { type: "set-staff-hours", staffClientId: staffId }, history: historyDescriptor("Öffnungszeiten als Arbeitszeiten übernommen", { target: TEAM_PANEL_TARGET }) });
       showToast("Die Öffnungszeiten wurden als persönliche Arbeitszeiten übernommen. Sie können später unabhängig verfeinert werden.");
     }
     renderTeam(store);

@@ -89,6 +89,11 @@ export function buildWebsiteHtml(draft, options = {}) {
     const legacyImageNotice = options.preview && draft.migration.legacyHeroImageUrl
         ? '<div class="migration-notice">Das frühere Titelbild wird aus Datenschutz- und Stabilitätsgründen nicht extern geladen. Im nächsten Bildschritt kannst du es neu hochladen.</div>'
         : "";
+    // The head is rebuilt on every full render and on every export, but it is NOT patched: title, meta
+    // description and the JSON-LD block sit outside every data-preview-region, so an incremental
+    // preview update leaves them on the state of the last rebuild. Only `theme-color` is kept in sync,
+    // because a theme patch touches it directly. Nothing in the preview shows the head, which is why
+    // the drift is accepted rather than hidden — see the note in preview-update-planner.ts.
     return `<!doctype html>
 <html lang="de-CH">
 <head>

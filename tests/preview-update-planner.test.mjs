@@ -47,8 +47,13 @@ test("ein Text, der leer wird, ersetzt seine Region statt nur seinen Inhalt", ()
 
 test("ein mehrfach vorkommendes Feld ersetzt jede Region, in der es steht", () => {
   const store = fixture();
+  // Der Intro-Streifen zeigt den Salonnamen nur als Platzhalter für eine fehlende Tagline. Mit
+  // Tagline steht der Name dort nicht — ihn trotzdem zu tauschen wäre ein unnötiger Regionentausch.
   const result = plan(store, [setField(store, "salon.name", "Salon Nord")]);
-  assert.deepEqual(regions(result), ["header", "intro", "details", "footer"]);
+  assert.deepEqual(regions(result), ["header", "details", "footer"]);
+
+  const ohneTagline = fixture((draft) => { draft.salon.tagline = ""; });
+  assert.deepEqual(regions(plan(ohneTagline, [setField(ohneTagline, "salon.name", "Salon Nord")])), ["header", "intro", "details", "footer"]);
 });
 
 test("die beiden Farbfelder werden als Theme gepatcht, nicht als Vollrender", () => {

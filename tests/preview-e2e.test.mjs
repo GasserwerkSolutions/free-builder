@@ -10,10 +10,14 @@ import puppeteer from "puppeteer-core";
 // layout, real scrolling, and the question of whether an edit actually patches the live document
 // instead of rebuilding it.
 //
-// This test skips — loudly — when no browser can be found, rather than pretending to have run. Set
-// CHROME_PATH to point it at one.
+// Locally this test skips — loudly — when no browser can be found, rather than pretending to have
+// run. Set CHROME_PATH (or CHROME_BIN, which the GitHub runner image already sets) to point it at
+// one. In CI it does NOT skip: this is the only test with a real layout engine, and `node --test`
+// ends a skipped test with exit 0, so a silently disappearing browser would silently disappear the
+// gate with it. There it fails instead.
 const CANDIDATES = [
   process.env.CHROME_PATH,
+  process.env.CHROME_BIN,
   "C:/Program Files/Google/Chrome/Application/chrome.exe",
   "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
   "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
@@ -52,8 +56,11 @@ async function staticServer() {
 }
 
 const executablePath = await findBrowser();
+const inCi = Boolean(process.env.CI);
+const skip = executablePath || inCi ? false : "Kein Chromium gefunden — CHROME_PATH oder CHROME_BIN setzen";
 
-test("echte Vorschau im Chromium: Patch statt Neuaufbau, Klick springt ins Feld", { timeout: 90_000, skip: executablePath ? false : "Kein Chromium gefunden — CHROME_PATH setzen" }, async () => {
+test("echte Vorschau im Chromium: Patch statt Neuaufbau, Klick springt ins Feld", { timeout: 90_000, skip }, async () => {
+  assert.ok(executablePath, `In CI muss ein Browser vorhanden sein. Gesucht wurde in: ${CANDIDATES.filter(Boolean).join(", ")}. CHROME_PATH oder CHROME_BIN setzen oder einen Browser installieren.`);
   const { server, url } = await staticServer();
   const browser = await puppeteer.launch({ executablePath, headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"], defaultViewport: { width: 1440, height: 900 } });
   try {

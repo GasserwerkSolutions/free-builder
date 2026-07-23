@@ -21,12 +21,14 @@ function fixture(prepare) {
   const contentWindow = { postMessage: (message, targetOrigin) => sent.push({ message, targetOrigin }) };
   const frame = { contentWindow, get srcdoc() { return srcdocs.at(-1) ?? ""; }, set srcdoc(value) { srcdocs.push(value); } };
   const navigated = [];
+  const status = [];
   let ids = 0;
   const runtime = new PreviewRuntime({
     frame,
     readDraft: () => store.snapshot,
     readRevision: () => store.revision,
     onNavigate: (target) => navigated.push(target),
+    onStatus: (value) => status.push(value),
     parentOrigin: "https://editor.test",
     createId: () => `id-${++ids}`,
   });
@@ -35,7 +37,7 @@ function fixture(prepare) {
   const envelope = (extra) => ({ channel: PREVIEW_CHANNEL, version: PREVIEW_PROTOCOL_VERSION, instanceId: runtime.instanceId, renderGeneration: runtime.renderGeneration, revision: store.revision, ...extra });
   const ready = () => deliver(envelope({ action: "ready" }));
   const close = () => { unsubscribe(); runtime.destroy(); };
-  return { store, runtime, sent, srcdocs, contentWindow, deliver, envelope, ready, navigated, close };
+  return { store, runtime, sent, srcdocs, contentWindow, deliver, envelope, ready, navigated, status, close };
 }
 
 const setTitle = (store, value) => store.mutate((draft) => { draft.copy.heroTitle = value; }, { intent: { type: "set-field", field: "copy.heroTitle" }, history: { label: "Haupttitel" } });
@@ -133,14 +135,46 @@ test("eine unbeantwortete Anfrage läuft ab und wird durch einen Vollrender erse
   close();
 });
 
-test("ein stummes Dokument wird genau einmal neu aufgebaut und dann nicht mehr", { timeout: 9000 }, async () => {
-  const { runtime, srcdocs, close } = fixture();
+test("ein stummes Dokument baut sich von selbst genau einmal neu auf und meldet sich dann als veraltet", { timeout: 9000 }, async () => {
+  const { runtime, srcdocs, status, close } = fixture();
   runtime.start();
   assert.equal(srcdocs.length, 1);
   await wait(2100);
   assert.equal(srcdocs.length, 2, "ein Wiederholungsversuch");
   await wait(2100);
   assert.equal(srcdocs.length, 2, "und keine Endlosschleife");
+  // Früher endete es genau hier — stumm und für immer. Der erschöpfte Pfad ist jetzt ein sichtbarer
+  // Zustand statt eines Endzustands.
+  assert.equal(runtime.isStale, true);
+  assert.deepEqual(status, ["stale"], "der Benutzer erfährt einmal, dass die Vorschau nicht aktuell ist");
+  close();
+});
+
+test("nach erschöpften Versuchen holt die nächste Änderung die Vorschau zurück, ohne Warteschlange und ohne Wiederholungsschleife", { timeout: 20_000 }, async () => {
+  const { store, runtime, srcdocs, status, ready, close } = fixture();
+  runtime.start();
+  await wait(4300);
+  assert.equal(srcdocs.length, 2);
+  assert.equal(runtime.isStale, true);
+
+  // 500 Änderungen gegen eine Vorschau, die nicht antwortet: früher wuchs `pending` monoton mit,
+  // `applied` blieb 0 und es passierte gar nichts mehr.
+  for (let index = 0; index < 500; index += 1) setTitle(store, `Stand ${index}`);
+  assert.ok(runtime.pendingCount <= 200, `die Warteschlange bleibt begrenzt (war ${runtime.pendingCount})`);
+  await wait(70);
+  assert.equal(srcdocs.length, 3, "eine neue Änderung stösst genau einen neuen Versuch an");
+  assert.match(srcdocs.at(-1), /Stand 499/, "und zwar mit dem jüngsten Stand");
+  assert.deepEqual(status, ["stale"], "aber keine zweite Meldung im selben Zustand");
+
+  // Und der neue Versuch dreht sich nicht von selbst weiter.
+  await wait(2200);
+  assert.equal(srcdocs.length, 3, "keine Endlosschleife");
+
+  // Antwortet das Dokument wieder, ist die Vorschau zurück — und sagt es.
+  assert.equal(ready(), true);
+  assert.equal(runtime.isStale, false);
+  assert.deepEqual(status, ["stale", "live"]);
+  assert.equal(runtime.appliedRevision, 500);
   close();
 });
 

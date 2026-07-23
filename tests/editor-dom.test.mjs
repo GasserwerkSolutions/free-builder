@@ -366,5 +366,38 @@ test("jeder Historienschritt merkt sich, um welches Editor-Feld es ging", async 
   const staffCard = document.querySelector("[data-staff-card]");
   type(staffCard.querySelector('[data-staff-field="email"]'), "anna@example.test", { commit: false });
   assert.deepEqual(store.nextUndoAction.target, { kind: "panel", panel: "team" });
+
+  // Auch die Übernahme der Öffnungszeiten als Arbeitszeiten ist ein Schritt mit Ziel — sie war der
+  // einzige Aufruf, der keines mitgab.
+  click(document.querySelector('[data-team-action="copy-business-hours"]'));
+  assert.deepEqual(store.nextUndoAction.target, { kind: "panel", panel: "team" });
+  cleanup();
+});
+
+test("destroy() nimmt jeden Zuhörer zurück und räumt die Meldezeile ab", async () => {
+  const { window, document, store, ui, cleanup } = await bootEditor();
+  const source = document.getElementById("previewFrame").contentWindow;
+  const preview = ui.previewRuntime;
+  const message = {
+    channel: PREVIEW_CHANNEL,
+    version: PREVIEW_PROTOCOL_VERSION,
+    instanceId: preview.instanceId,
+    renderGeneration: preview.renderGeneration,
+    revision: store.revision,
+    action: "navigate-to-editor",
+    target: { kind: "service", serviceClientId: "gibt-es-nicht", field: "name" },
+  };
+  window.dispatchEvent(new window.MessageEvent("message", { data: message, source, origin: "null" }));
+  assert.ok(document.getElementById("previewAnnouncer"), "die Meldezeile entsteht bei Bedarf");
+
+  const services = store.snapshot.services.length;
+  ui.destroy();
+  assert.equal(document.getElementById("previewAnnouncer"), null, "und verschwindet mit dem Abräumen wieder");
+
+  // Klick, Eingabe und Änderung laufen jetzt ins Leere statt weiter in den Entwurf zu schreiben.
+  click(document.querySelector('[data-action="add-service"]'));
+  assert.equal(store.snapshot.services.length, services, "kein Klick-Zuhörer mehr");
+  type(document.querySelector('[data-bind="salon.city"]'), "Winterthur");
+  assert.equal(store.snapshot.salon.city, "Zürich", "kein input-/change-Zuhörer mehr");
   cleanup();
 });
