@@ -239,6 +239,14 @@ const FIELD_PRESENCE_RULES = {
 const STAFF_FIELD_PRESENCE_RULES = {
     email: isEmail,
 };
+/**
+ * The presence of one bound scalar field, judged by exactly the rules the mutation layer uses.
+ * Exported so a surface (the publish list) asks this authority instead of re-deciding "is this
+ * usable?" a second time and drifting away from it.
+ */
+export function fieldPresence(draft, field) {
+    return presence(getAtPath(draft, field), FIELD_PRESENCE_RULES[field]);
+}
 function presence(value, rule) {
     if (typeof value === "string") {
         if (!value.trim())

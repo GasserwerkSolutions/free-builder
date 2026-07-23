@@ -9,23 +9,52 @@ export function createUiContext(store, repository) {
     return {
         store,
         repository,
+        workspace: requiredElement("builder-main"),
+        controlSurface: requiredElement("controlSurface"),
+        surfaceStage: requiredElement("surfaceStage"),
         surfaceCard: requiredElement("surfaceCard"),
+        sidebarToggle: requiredElement("sidebarToggle"),
+        undoButton: requiredElement("undoButton"),
+        redoButton: requiredElement("redoButton"),
         previewFrame: requiredElement("previewFrame"),
         previewHint: requiredElement("previewHint"),
         saveStatus: requiredElement("saveStatus"),
         serviceList: requiredElement("serviceList"),
         testimonialList: requiredElement("testimonialList"),
         hoursList: requiredElement("hoursList"),
+        readinessSummary: requiredElement("readinessSummary"),
         readinessList: requiredElement("readinessList"),
         serviceTemplate: requiredElement("serviceTemplate"),
         testimonialTemplate: requiredElement("testimonialTemplate"),
         preview: null,
         volatileStorage: false,
+        mobileMode: "edit",
+        mobileEditorScroll: 0,
     };
 }
+// Remembered UI preferences (sidebar, first-run hint). localStorage can be unavailable or full, and
+// a lost preference is never a reason to break the editor — so both directions swallow the failure.
+export function readPreference(key) {
+    try {
+        return localStorage.getItem(key);
+    }
+    catch {
+        return null;
+    }
+}
+export function writePreference(key, value) {
+    try {
+        localStorage.setItem(key, value);
+    }
+    catch { /* a preference is not worth an error */ }
+}
+/** Escape a client id for use inside a CSS attribute selector, with a fallback for old engines. */
+export function cssEscape(value) {
+    return typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
+}
 /**
- * The polite channel for things the user should hear but not be interrupted by — currently only the
- * result of a click in the preview. Created on demand so the static page owns no dead markup.
+ * The polite channel for things the user should hear but not be interrupted by — the result of a
+ * click in the preview and of a reorder. Created on demand so the static page owns no dead markup.
  */
 export function announce(context, message) {
     void context;

@@ -1,12 +1,14 @@
 import { isPreviewTarget, panelForTarget, type PreviewTarget } from "./preview-contract.js";
+import { ensureEditorOpen } from "./sidebar.js";
 import { showPanel } from "./ui-render.js";
-import { announce, type UiContext } from "./ui-shared.js";
+import { announce, cssEscape, type UiContext } from "./ui-shared.js";
 
 const HIGHLIGHT_MS = 1_800;
 const highlightTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
 
 /**
- * A click in the preview opens the field that produced it.
+ * A click in the preview — or an entry in the publish list, or an undone step — opens the field that
+ * produced it.
  *
  * The target arrives from a sandboxed document, so it is treated as a claim, not a fact: the panel is
  * derived from the shape and the element only from a target the current draft still contains. A stale
@@ -16,6 +18,9 @@ const highlightTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>(
 export function navigateToEditorTarget(context: UiContext, target: PreviewTarget): void {
   const stillExists = isPreviewTarget(target, context.store.snapshot);
   const panel = panelForTarget(target);
+  // Focusing a field behind a collapsed sidebar or behind the mobile preview would put the caret
+  // somewhere the user cannot see, so the surface is made reachable first.
+  ensureEditorOpen(context);
   showPanel(context, panel);
   const element = stillExists ? resolveEditorTarget(target) : null;
   const destination = element ?? document.querySelector<HTMLElement>(`[data-panel="${panel}"] h1, [data-panel="${panel}"] h2`);
@@ -42,8 +47,4 @@ export function resolveEditorTarget(target: PreviewTarget): HTMLElement | null {
   if (target.kind === "testimonial") return document.querySelector<HTMLElement>(`[data-testimonial-card][data-testimonial-id="${cssEscape(target.testimonialClientId)}"] [data-testimonial-field="${target.field}"]`);
   if (target.kind === "staff") return document.querySelector<HTMLElement>(`[data-staff-card][data-staff-id="${cssEscape(target.staffClientId)}"] [data-staff-field="${target.field}"]`);
   return document.querySelector<HTMLElement>(`[data-panel="${target.panel}"] h1, [data-panel="${target.panel}"] h2`);
-}
-
-function cssEscape(value: string): string {
-  return typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
 }

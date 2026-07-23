@@ -1,24 +1,40 @@
+import { closeSectionSheet, initMobileModes, isMobileModeActive, isSectionSheetOpen, markPreviewReturnAvailable } from "./mobile-modes.js";
 import { navigateToEditorTarget } from "./preview-navigation.js";
 import { PreviewRuntime } from "./preview-runtime.js";
-import { handleClick, handleInput } from "./ui-actions.js";
+import { cancelActiveDrag, handleReorderKeydown, handleReorderPointerDown, handleReorderPointerEnd, handleReorderPointerMove } from "./reorder-actions.js";
+import { initSidebar } from "./sidebar.js";
+import { handleClick, handleInput, stepHistory } from "./ui-actions.js";
 import { bindStaticInputs, renderDynamicControls, renderSaveState, updateMigrationNotice, updateReadiness, } from "./ui-render.js";
 import { createUiContext, showToast } from "./ui-shared.js";
 const PREVIEW_STATUS_MESSAGES = {
     stale: "Die Vorschau antwortet nicht mehr und zeigt nicht mehr deinen aktuellen Stand. Deine Änderungen sind gespeichert — mit der nächsten Änderung wird die Vorschau erneut aufgebaut.",
     live: "Die Vorschau ist wieder aktuell.",
 };
+// Controls that own a text caret. Inside one of them the browser has its own undo stack, and taking
+// Ctrl/Cmd + Z away from it would be a regression for the most ordinary thing a user does: fix a typo
+// while typing. A native text undo produces an ordinary input event, so it reaches the draft through
+// the normal path and the two histories cannot drift apart.
+const TEXT_ENTRY_SELECTOR = 'textarea, [contenteditable="true"], input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="file"])';
 export class BuilderUi {
     context;
     // Every listener is kept as one stable reference, because destroy() can only take back a listener
     // it can still name.
-    onMessage = (event) => { this.context.preview?.handleMessage(event); };
+    onMessage = (event) => { this.handlePreviewMessage(event); };
     onClick = (event) => { handleClick(this.context, event); };
     onInput = (event) => { handleInput(this.context, event); };
+    onKeydown = (event) => { this.handleKeydown(event); };
+    onPointerDown = (event) => { handleReorderPointerDown(this.context, event); };
+    onPointerMove = (event) => { handleReorderPointerMove(this.context, event); };
+    onPointerUp = (event) => { handleReorderPointerEnd(this.context, event); };
+    onPointerCancel = (event) => { handleReorderPointerEnd(this.context, event, true); };
     onPageHide = () => {
         void this.context.store.flush().catch((error) => console.error("Final draft flush failed.", error));
     };
     unsubscribeDraft = null;
     unsubscribeSave = null;
+    unsubscribeHistory = null;
+    teardownSidebar = null;
+    teardownMobile = null;
     constructor(store, repository) {
         this.context = createUiContext(store, repository);
     }
@@ -26,13 +42,22 @@ export class BuilderUi {
     get previewRuntime() { return this.context.preview; }
     init(options) {
         this.context.volatileStorage = Boolean(options.volatileStorage);
+        this.teardownSidebar = initSidebar(this.context);
+        this.teardownMobile = initMobileModes(this.context);
         bindStaticInputs(this.context);
         renderDynamicControls(this.context);
         const preview = new PreviewRuntime({
             frame: this.context.previewFrame,
             readDraft: () => this.context.store.snapshot,
             readRevision: () => this.context.store.revision,
-            onNavigate: (target) => navigateToEditorTarget(this.context, target),
+            onNavigate: (target) => {
+                // On a phone the tap came from the preview, which is now about to disappear behind the
+                // editing surface. Offer the way back instead of stranding the user in the form.
+                const fromMobilePreview = isMobileModeActive() && this.context.mobileMode === "preview";
+                navigateToEditorTarget(this.context, target);
+                if (fromMobilePreview)
+                    markPreviewReturnAvailable();
+            },
             // A preview that stopped answering is not allowed to fail silently: it says so through the one
             // message channel the editor has, so nobody keeps editing against a picture that stands still.
             onStatus: (status) => showToast(PREVIEW_STATUS_MESSAGES[status]),
@@ -49,9 +74,15 @@ export class BuilderUi {
             updateMigrationNotice(this.context);
         });
         this.unsubscribeSave = this.context.store.subscribeSave((state, error) => renderSaveState(this.context, state, error));
+        this.unsubscribeHistory = this.context.store.subscribeHistory((state) => renderHistoryState(this.context, state));
         document.addEventListener("click", this.onClick);
         document.addEventListener("input", this.onInput);
         document.addEventListener("change", this.onInput);
+        document.addEventListener("keydown", this.onKeydown);
+        document.addEventListener("pointerdown", this.onPointerDown);
+        document.addEventListener("pointermove", this.onPointerMove);
+        document.addEventListener("pointerup", this.onPointerUp);
+        document.addEventListener("pointercancel", this.onPointerCancel);
         window.addEventListener("message", this.onMessage);
         window.addEventListener("pagehide", this.onPageHide);
         if (options.migratedFromV1)
@@ -60,22 +91,71 @@ export class BuilderUi {
             showToast("Der frühere Entwurf war beschädigt. Ein neuer lokaler Entwurf wurde angelegt.");
     }
     /**
-     * Give back everything init() took: the four document/window listeners, both store subscriptions,
-     * the preview timers and the live region that was created on demand. After this the instance holds
-     * nothing that could still fire.
+     * Give back everything init() took: the document/window listeners, the store subscriptions, the
+     * sidebar and mobile-mode listeners, the preview timers and the live region that was created on
+     * demand. After this the instance holds nothing that could still fire.
      */
     destroy() {
         document.removeEventListener("click", this.onClick);
         document.removeEventListener("input", this.onInput);
         document.removeEventListener("change", this.onInput);
+        document.removeEventListener("keydown", this.onKeydown);
+        document.removeEventListener("pointerdown", this.onPointerDown);
+        document.removeEventListener("pointermove", this.onPointerMove);
+        document.removeEventListener("pointerup", this.onPointerUp);
+        document.removeEventListener("pointercancel", this.onPointerCancel);
         window.removeEventListener("message", this.onMessage);
         window.removeEventListener("pagehide", this.onPageHide);
+        cancelActiveDrag(this.context);
         this.unsubscribeDraft?.();
         this.unsubscribeDraft = null;
         this.unsubscribeSave?.();
         this.unsubscribeSave = null;
+        this.unsubscribeHistory?.();
+        this.unsubscribeHistory = null;
+        this.teardownSidebar?.();
+        this.teardownSidebar = null;
+        this.teardownMobile?.();
+        this.teardownMobile = null;
         this.context.preview?.destroy();
         this.context.preview = null;
         document.getElementById("previewAnnouncer")?.remove();
     }
+    handlePreviewMessage(event) { this.context.preview?.handleMessage(event); }
+    handleKeydown(event) {
+        if (handleReorderKeydown(this.context, event))
+            return;
+        if (event.key === "Escape" && isSectionSheetOpen()) {
+            event.preventDefault();
+            closeSectionSheet(this.context);
+            return;
+        }
+        if (event.defaultPrevented || event.altKey)
+            return;
+        if (!(event.ctrlKey || event.metaKey))
+            return;
+        const key = event.key.toLowerCase();
+        const direction = key === "z" ? (event.shiftKey ? "redo" : "undo") : key === "y" && !event.shiftKey ? "redo" : null;
+        if (!direction)
+            return;
+        // Inside a text control the browser's own undo wins; see TEXT_ENTRY_SELECTOR.
+        if (event.target instanceof Element && event.target.closest(TEXT_ENTRY_SELECTOR))
+            return;
+        event.preventDefault();
+        stepHistory(this.context, direction);
+    }
+}
+/**
+ * The two history buttons say what they would undo, not just that they can. The label is the same
+ * one the toast uses afterwards, so nothing is announced twice under two different names.
+ */
+function renderHistoryState(context, state) {
+    describeHistoryButton(context.undoButton, "Rückgängig", state.canUndo, state.undoAction?.label ?? null, "Strg oder Cmd + Z");
+    describeHistoryButton(context.redoButton, "Wiederholen", state.canRedo, state.redoAction?.label ?? null, "Umschalt + Strg oder Cmd + Z");
+}
+function describeHistoryButton(button, direction, enabled, label, shortcut) {
+    button.disabled = !enabled;
+    const description = label ? `${direction}: ${label}` : direction;
+    button.setAttribute("aria-label", `${description} (${shortcut})`);
+    button.title = `${description} (${shortcut})`;
 }

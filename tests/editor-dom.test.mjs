@@ -270,8 +270,20 @@ test("eine abgewiesene Entfernung lässt die Liste im Einklang mit dem Entwurf",
 
 // --- Klick in der Vorschau -> Sprung ins Editor-Feld -------------------------------------------
 
-// navigateToEditorTarget only reads from the surface; these are the two elements it touches.
-const navContext = (document, store) => ({ store, surfaceCard: document.getElementById("surfaceCard"), readinessList: document.getElementById("readinessList") });
+// navigateToEditorTarget only reads from the surface; these are the elements it touches. Since the
+// jump also has to make the surface reachable first (collapsed sidebar, mobile preview mode), that
+// now includes the sidebar elements.
+const navContext = (document, store) => ({
+  store,
+  workspace: document.getElementById("builder-main"),
+  controlSurface: document.getElementById("controlSurface"),
+  surfaceStage: document.getElementById("surfaceStage"),
+  sidebarToggle: document.getElementById("sidebarToggle"),
+  surfaceCard: document.getElementById("surfaceCard"),
+  readinessSummary: document.getElementById("readinessSummary"),
+  readinessList: document.getElementById("readinessList"),
+  mobileMode: "edit",
+});
 
 test("ein Vorschau-Ziel öffnet den passenden Bereich und setzt den Fokus ins Feld", async () => {
   const { document, store, cleanup } = await bootEditor();

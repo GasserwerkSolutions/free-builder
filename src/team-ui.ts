@@ -5,8 +5,6 @@ import {
   createStaffDraft,
   escapeAttr,
   escapeHtml,
-  getTeamReadinessChecks,
-  getTeamReadinessIssues,
   removeRange,
   removeStaffAndOwnedAssets,
   setAllBookableServicesForStaff,
@@ -23,6 +21,7 @@ import type { StaffEditableField } from "./draft-mutations.js";
 import type { DraftRepository } from "./persistence.js";
 import type { BuilderStore } from "./store.js";
 import type { PreviewTarget } from "./preview-contract.js";
+import { configureReorderControls } from "./ui-render.js";
 import { STAFF_HOURS_NS, historyDescriptor, renderScheduleEditor, safeMutate, showToast } from "./ui-shared.js";
 
 const installedStores = new WeakSet<BuilderStore>();
@@ -127,24 +126,16 @@ function renderStaffCard(store: BuilderStore, person: BuilderStaff, index: numbe
 
 export function renderTeam(store: BuilderStore): void {
   const { list } = ensureTeamSurface();
+  const staff = store.snapshot.staff;
   lastShapeFingerprint = shapeFingerprint(store);
-  list.innerHTML = store.snapshot.staff.length
-    ? store.snapshot.staff.map((person, index) => renderStaffCard(store, person, index)).join("")
+  list.innerHTML = staff.length
+    ? staff.map((person, index) => renderStaffCard(store, person, index)).join("")
     : '<div class="empty-state">Noch keine Person erfasst. Für die spätere Online-Buchung braucht jede buchbare Leistung mindestens eine aktive Person.</div>';
-}
-
-function appendTeamReadiness(store: BuilderStore): void {
-  const readiness = document.getElementById("readinessList");
-  if (!readiness) return;
-  readiness.querySelectorAll("[data-team-readiness]").forEach((element) => element.remove());
-  const checks = getTeamReadinessChecks(store.snapshot);
-  checks.forEach((check) => {
-    readiness.insertAdjacentHTML("beforeend", `<div data-team-readiness class="readiness-item${check.ready ? " is-ready" : ""}">${escapeHtml(check.label)}</div>`);
+  // The reorder controls come from the one builder in ui-render, so a person's card carries exactly
+  // the same three buttons as a service or a voice.
+  list.querySelectorAll<HTMLElement>("[data-staff-card]").forEach((card, index) => {
+    configureReorderControls(card, `Person „${staff[index]?.name.trim() || "Ohne Namen"}“`, index, staff.length);
   });
-  const issues = getTeamReadinessIssues(store.snapshot);
-  if (issues.length) {
-    readiness.insertAdjacentHTML("beforeend", `<div data-team-readiness class="readiness-detail">${issues.map((issue) => escapeHtml(issue.message)).join("<br>")}</div>`);
-  }
 }
 
 function staffIdFrom(target: Element): string {
@@ -196,18 +187,17 @@ export function installTeamUi(store: BuilderStore, repository: DraftRepository):
   installedStores.add(store);
   ensureTeamSurface();
   renderTeam(store);
-  appendTeamReadiness(store);
 
-  store.subscribe(() => {
-    const nextFingerprint = shapeFingerprint(store);
-    if (nextFingerprint !== lastShapeFingerprint) renderTeam(store);
-    appendTeamReadiness(store);
+  store.subscribe((_draft, mutation) => {
+    // Undo and redo can change anything on a card without changing the shape of the team, so they
+    // always rebuild it — and they do so before the caller navigates into the restored field.
+    const rebuilt = mutation.source === "undo" || mutation.source === "redo";
+    if (rebuilt || shapeFingerprint(store) !== lastShapeFingerprint) renderTeam(store);
   });
 
   document.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
-    if (target.closest('[data-panel-target="publish"]')) appendTeamReadiness(store);
     const hourActionTarget = target.closest<HTMLElement>("[data-staff-hour-action]");
     if (hourActionTarget) { handleStaffHourAction(store, hourActionTarget); return; }
     const actionTarget = target.closest<HTMLElement>("[data-team-action]");

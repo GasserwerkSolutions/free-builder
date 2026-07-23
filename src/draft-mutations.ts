@@ -347,6 +347,15 @@ const STAFF_FIELD_PRESENCE_RULES: Partial<Record<StaffEditableField, PresenceRul
   email: isEmail,
 };
 
+/**
+ * The presence of one bound scalar field, judged by exactly the rules the mutation layer uses.
+ * Exported so a surface (the publish list) asks this authority instead of re-deciding "is this
+ * usable?" a second time and drifting away from it.
+ */
+export function fieldPresence(draft: Readonly<BuilderDraftV2>, field: EditableFieldPath): ContentPresence {
+  return presence(getAtPath(draft, field), FIELD_PRESENCE_RULES[field]);
+}
+
 function presence(value: unknown, rule?: PresenceRule): ContentPresence {
   if (typeof value === "string") {
     if (!value.trim()) return "empty";

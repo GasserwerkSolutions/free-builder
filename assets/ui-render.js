@@ -1,5 +1,7 @@
-import { PRESETS, escapeHtml, getAtPath, validateWeeklySchedule, } from "./domain.js";
+import { PRESETS, escapeAttr, escapeHtml, getAtPath, validateWeeklySchedule, } from "./domain.js";
+import { evaluateReadiness } from "./readiness.js";
 import { BUSINESS_HOURS_NS, renderScheduleEditor } from "./ui-shared.js";
+const SEVERITY_LABELS = { error: "Blocker", warning: "Hinweis" };
 export function bindStaticInputs(context) {
     document.querySelectorAll("[data-bind]").forEach((input) => {
         const value = getAtPath(context.store.snapshot, input.dataset.bind ?? "");
@@ -19,11 +21,12 @@ export function renderDynamicControls(context) {
 }
 export function renderServices(context) {
     context.serviceList.innerHTML = "";
-    if (!context.store.snapshot.services.length) {
+    const services = context.store.snapshot.services;
+    if (!services.length) {
         context.serviceList.innerHTML = '<div class="empty-state">Noch keine Leistungen. Füge die erste Leistung hinzu.</div>';
         return;
     }
-    context.store.snapshot.services.forEach((service, index) => {
+    services.forEach((service, index) => {
         const fragment = context.serviceTemplate.content.cloneNode(true);
         const card = fragment.querySelector("[data-service-card]");
         if (!card)
@@ -39,8 +42,49 @@ export function renderServices(context) {
             else
                 input.value = String(service[field] ?? "");
         });
+        configureReorderControls(card, `Leistung „${service.name.trim() || "Ohne Namen"}“`, index, services.length);
         context.serviceList.appendChild(fragment);
     });
+}
+/**
+ * The reorder controls of one card — built here and nowhere else.
+ *
+ * The markup exists exactly once for all three reorderable lists (services, people, voices); the two
+ * static templates and the team surface would otherwise carry three copies of the same three buttons.
+ */
+export function configureReorderControls(card, label, index, count) {
+    const topline = card.querySelector(".item-card__topline");
+    if (!topline)
+        return;
+    let group = topline.querySelector(".reorder-actions");
+    if (!group) {
+        const removeButton = topline.querySelector(".icon-button");
+        group = document.createElement("div");
+        group.className = "reorder-actions";
+        group.setAttribute("role", "group");
+        group.innerHTML = '<button class="icon-button icon-button--move" type="button" data-reorder-direction="up">↑</button>'
+            + '<button class="reorder-handle" type="button" data-reorder-handle><span aria-hidden="true">⠿</span></button>'
+            + '<button class="icon-button icon-button--move" type="button" data-reorder-direction="down">↓</button>';
+        if (removeButton)
+            topline.insertBefore(group, removeButton);
+        else
+            topline.appendChild(group);
+    }
+    group.setAttribute("aria-label", `Reihenfolge von ${label} ändern`);
+    card.setAttribute("aria-label", `${label}, Position ${index + 1} von ${count}`);
+    group.querySelectorAll("[data-reorder-direction]").forEach((button) => {
+        const upward = button.dataset.reorderDirection === "up";
+        button.disabled = count < 2 || (upward ? index === 0 : index === count - 1);
+        const description = `${label} nach ${upward ? "oben" : "unten"}`;
+        button.setAttribute("aria-label", description);
+        button.title = description;
+    });
+    const handle = group.querySelector("[data-reorder-handle]");
+    if (!handle)
+        return;
+    handle.disabled = count < 2;
+    handle.setAttribute("aria-label", `${label} ziehen. Alternativ mit Alt und Pfeil hoch oder runter verschieben.`);
+    handle.title = "Ziehen oder Alt + Pfeil hoch/runter";
 }
 export function renderHours(context) {
     context.hoursList.innerHTML = renderScheduleEditor(context.store.snapshot.businessHours, BUSINESS_HOURS_NS);
@@ -63,11 +107,12 @@ export function renderHoursErrors(context) {
 }
 export function renderTestimonials(context) {
     context.testimonialList.innerHTML = "";
-    if (!context.store.snapshot.testimonials.items.length) {
+    const items = context.store.snapshot.testimonials.items;
+    if (!items.length) {
         context.testimonialList.innerHTML = '<div class="empty-state">Keine Kundenstimmen eingetragen. Dieser Bereich bleibt auf der Website verborgen.</div>';
         return;
     }
-    context.store.snapshot.testimonials.items.forEach((item, index) => {
+    items.forEach((item, index) => {
         const fragment = context.testimonialTemplate.content.cloneNode(true);
         const card = fragment.querySelector("[data-testimonial-card]");
         if (!card)
@@ -79,6 +124,7 @@ export function renderTestimonials(context) {
         fragment.querySelectorAll("[data-testimonial-field]").forEach((input) => {
             input.value = item[input.dataset.testimonialField] ?? "";
         });
+        configureReorderControls(card, `Kundenstimme „${item.name.trim() || "Ohne Namen"}“`, index, items.length);
         context.testimonialList.appendChild(fragment);
     });
 }
@@ -106,19 +152,28 @@ export function syncPresetInputs(context, name) {
 export function renderPreview(context) {
     context.preview?.renderFull();
 }
+/**
+ * The publish list: what is still open, worst first, and every line a jump into the field that owns
+ * the problem. Nothing here decides what "open" means — that is readiness.ts.
+ */
 export function updateReadiness(context) {
-    const draft = context.store.snapshot;
-    const scheduleErrors = validateWeeklySchedule(draft.businessHours);
-    const checks = [
-        { label: "Salonname eingetragen", ready: Boolean(draft.salon.name.trim()) },
-        { label: "Kontaktmöglichkeit vorhanden", ready: Boolean(draft.salon.phone.trim() || draft.salon.email.trim()) },
-        { label: "Mindestens eine Leistung mit Preis", ready: draft.services.some((service) => service.name.trim() && (service.price > 0 || service.priceType === "on-request")) },
-        { label: "Öffnungszeiten gültig", ready: scheduleErrors.length === 0 && draft.businessHours.some((day) => !day.closed) },
-        { label: "Entwurf im neuen lokalen Speicher", ready: draft.schemaVersion === 2 },
-    ];
-    context.readinessList.innerHTML = checks.map((check) => `<div class="readiness-item${check.ready ? " is-ready" : ""}">${escapeHtml(check.label)}</div>`).join("");
-    if (scheduleErrors.length)
-        context.readinessList.insertAdjacentHTML("beforeend", `<div class="readiness-detail">${scheduleErrors.map(escapeHtml).join("<br>")}</div>`);
+    const summary = evaluateReadiness(context.store.snapshot);
+    const title = summary.ready ? summary.clean ? "Bereit, ohne offene Hinweise" : "Bereit, mit Hinweisen" : `${summary.errorCount} offene ${summary.errorCount === 1 ? "Blockierung" : "Blockierungen"}`;
+    const detail = summary.ready
+        ? summary.clean
+            ? "Alles Geprüfte ist beisammen. Die Website kann exportiert werden."
+            : `${summary.warningCount} ${summary.warningCount === 1 ? "Hinweis hält" : "Hinweise halten"} dich nicht auf — du kannst sie bewusst stehen lassen.`
+        : "Tippe einen Punkt an, um direkt im zuständigen Feld zu landen.";
+    context.readinessSummary.className = `readiness-summary ${summary.ready ? "is-ready" : "is-blocked"}${summary.clean ? " is-clean" : ""}`;
+    context.readinessSummary.innerHTML = `<strong>${escapeHtml(title)}</strong><span>${escapeHtml(detail)}</span>`
+        + `<div class="readiness-counts"><span>${summary.errorCount} Blocker</span><span>${summary.warningCount} Hinweise</span></div>`;
+    context.readinessList.innerHTML = summary.results.length
+        ? summary.results.map((item) => `<button class="readiness-result is-${item.severity}" type="button" data-editor-target="${escapeAttr(JSON.stringify(item.target))}">`
+            + `<span class="readiness-result__severity">${escapeHtml(SEVERITY_LABELS[item.severity])}</span>`
+            + `<span class="readiness-result__copy"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.detail)}</small></span>`
+            + `<span class="readiness-result__arrow" aria-hidden="true">→</span><span class="visually-hidden">bearbeiten</span>`
+            + `</button>`).join("")
+        : '<div class="readiness-empty"><strong>Keine offenen Punkte</strong><span>Jede geprüfte Angabe ist vorhanden und brauchbar.</span></div>';
 }
 export function updateMigrationNotice(context) {
     const note = document.getElementById("migrationNotice");

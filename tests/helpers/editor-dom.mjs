@@ -30,12 +30,18 @@ function patchTimers() {
 const DOM_GLOBALS = [
   "Element", "Node", "HTMLElement", "HTMLInputElement", "HTMLTextAreaElement", "HTMLSelectElement",
   "HTMLIFrameElement", "HTMLTemplateElement", "HTMLButtonElement", "Event", "CustomEvent",
-  "MouseEvent", "KeyboardEvent", "MessageEvent", "DOMParser", "NodeFilter", "getComputedStyle",
+  "MouseEvent", "KeyboardEvent", "PointerEvent", "MessageEvent", "DOMParser", "NodeFilter", "getComputedStyle",
 ];
 
+const MOBILE_MEDIA = "(max-width: 700px)";
+
 /**
- * Boot the editor. `confirmAnswer` decides what window.confirm returns — jsdom has no implementation
- * and the destructive paths (reset, copy day) go through it.
+ * Boot the editor.
+ *
+ * `confirmAnswer` decides what window.confirm returns — jsdom has no implementation and the
+ * destructive paths (reset, copy day) go through it. `mobile` makes the mobile media query match, so
+ * the two-mode surface can be driven the way a phone drives it. `preferences` seeds localStorage
+ * before init, which is how a remembered sidebar state is reproduced.
  */
 export async function bootEditor(options = {}) {
   patchTimers();
@@ -43,12 +49,22 @@ export async function bootEditor(options = {}) {
   const dom = new JSDOM(indexHtml, { url: "https://editor.test", pretendToBeVisual: true });
   const { window } = dom;
   window.confirm = () => options.confirmAnswer ?? true;
-  window.matchMedia = window.matchMedia ?? (() => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+  // jsdom implements neither of these; the mobile modes depend on both.
+  window.matchMedia = (query) => ({
+    media: query,
+    matches: Boolean(options.mobile) && query === MOBILE_MEDIA,
+    addEventListener() {},
+    removeEventListener() {},
+  });
+  window.scrollTo = () => {};
+  for (const [key, value] of Object.entries(options.preferences ?? {})) window.localStorage.setItem(key, value);
   globalThis.window = window;
   globalThis.document = window.document;
   globalThis.location = window.location;
-  // Node exposes globalThis.navigator through a getter, so a plain assignment throws.
+  // Node exposes globalThis.navigator and globalThis.localStorage through getters, so a plain
+  // assignment throws. Without localStorage every remembered UI preference would silently no-op.
   Object.defineProperty(globalThis, "navigator", { value: window.navigator, configurable: true, writable: true });
+  Object.defineProperty(globalThis, "localStorage", { value: window.localStorage, configurable: true, writable: true });
   globalThis.CSS = window.CSS?.escape ? window.CSS : { escape: (value) => String(value).replace(/["\\]/g, "\\$&") };
   globalThis.matchMedia = (query) => window.matchMedia(query);
   globalThis.requestAnimationFrame = (callback) => { callback(0); return 1; };
@@ -108,6 +124,34 @@ export function choose(element, value) {
   element.value = value;
   element.dispatchEvent(new view.Event("input", { bubbles: true }));
   element.dispatchEvent(new view.Event("change", { bubbles: true }));
+}
+
+/** A key press, delivered where a browser delivers it: on the focused element, bubbling up. */
+export function keydown(target, key, modifiers = {}) {
+  assertPresent(target, "keydown");
+  const view = target.ownerDocument?.defaultView ?? target.defaultView ?? target;
+  const event = new view.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...modifiers });
+  target.dispatchEvent(event);
+  return event;
+}
+
+/** A pointer event on an element. jsdom does no layout, so clientY has to be supplied by the test. */
+export function pointer(target, type, { pointerId = 1, clientY = 0, button = 0 } = {}) {
+  assertPresent(target, type);
+  const view = target.ownerDocument.defaultView;
+  const event = new view.PointerEvent(type, { bubbles: true, cancelable: true, pointerId, clientY, button });
+  target.dispatchEvent(event);
+  return event;
+}
+
+/**
+ * jsdom reports every box as 0×0, which would make any drop position meaningless. This gives the
+ * cards of one list a stack of fake boxes so the insertion arithmetic has something real to chew on.
+ */
+export function stackRects(elements, height = 100) {
+  elements.forEach((element, index) => {
+    element.getBoundingClientRect = () => ({ top: index * height, bottom: (index + 1) * height, height, left: 0, right: 0, width: 0, x: 0, y: index * height });
+  });
 }
 
 export function toastText(document) {

@@ -13,8 +13,12 @@ import { addRange, copyDayToDays, removeRange, setAtPath, setDayClosed, setRange
 import type { EditableFieldPath, ServiceEditableField } from "./draft-mutations.js";
 import { replaceWithFreshDraft } from "./persistence.js";
 import { isPreviewTargetShape, type PreviewTarget, type ServicePreviewField } from "./preview-contract.js";
+import { navigateToEditorTarget } from "./preview-navigation.js";
 import { buildWebsiteHtml } from "./website.js";
 import { historyDescriptor, inputValue, safeMutate, showToast, type UiContext } from "./ui-shared.js";
+import { closeSectionSheet, openSectionSheet, setMobileMode } from "./mobile-modes.js";
+import { ensureEditorOpen } from "./sidebar.js";
+import { handleReorderClick } from "./reorder-actions.js";
 import {
   bindStaticInputs,
   renderDynamicControls,
@@ -33,14 +37,29 @@ import {
 export function handleClick(context: UiContext, event: Event): void {
   const target = event.target;
   if (!(target instanceof Element)) return;
+  // A readiness entry is a jump, not an edit: it uses the same navigation as a click in the preview.
+  const editorTarget = target.closest<HTMLElement>("[data-editor-target]");
+  if (editorTarget) { jumpToEditorTarget(context, editorTarget.dataset.editorTarget ?? ""); return; }
+  if (target.closest("[data-sheet-open]")) { openSectionSheet(context); return; }
+  if (target.closest("[data-sheet-close]")) { closeSectionSheet(context); return; }
   const panelButton = target.closest<HTMLElement>("[data-panel-target]");
-  if (panelButton) { showPanel(context, panelButton.dataset.panelTarget ?? "salon"); return; }
+  if (panelButton) {
+    const fromSheet = Boolean(panelButton.closest("#sectionSheet"));
+    ensureEditorOpen(context);
+    showPanel(context, panelButton.dataset.panelTarget ?? "salon");
+    if (fromSheet) closeSectionSheet(context, true);
+    return;
+  }
+  const modeButton = target.closest<HTMLElement>("[data-mode]");
+  if (modeButton) { setMobileMode(context, modeButton.dataset.mode === "preview" ? "preview" : "edit"); return; }
+  if (target.closest("[data-return-preview]")) { setMobileMode(context, "preview"); return; }
   const viewportButton = target.closest<HTMLElement>("[data-viewport]");
   if (viewportButton) { setViewport(context, viewportButton.dataset.viewport ?? "desktop"); return; }
   const presetButton = target.closest<HTMLElement>("[data-preset]");
   if (presetButton) { applyPreset(context, presetButton.dataset.preset as ThemePresetName); return; }
   const hourActionButton = target.closest<HTMLElement>("[data-hour-action]");
   if (hourActionButton) { handleHourAction(context, hourActionButton); return; }
+  if (handleReorderClick(context, target)) return;
   const actionButton = target.closest<HTMLElement>("[data-action]");
   if (!actionButton) return;
   const action = actionButton.dataset.action;
@@ -48,9 +67,35 @@ export function handleClick(context: UiContext, event: Event): void {
   if (action === "remove-service") removeService(context, actionButton.closest<HTMLElement>("[data-service-card]")?.dataset.serviceId ?? "");
   if (action === "add-testimonial") addTestimonial(context);
   if (action === "remove-testimonial") removeTestimonial(context, actionButton.closest<HTMLElement>("[data-testimonial-card]")?.dataset.testimonialId ?? "");
+  if (action === "undo") stepHistory(context, "undo");
+  if (action === "redo") stepHistory(context, "redo");
   if (action === "export") exportHtml(context);
   if (action === "copy-json") void copySalonData(context);
   if (action === "reset") void resetBuilder(context);
+}
+
+/**
+ * Undo and redo through the surface.
+ *
+ * The store owns the revision; the surface has to be rebuilt from it afterwards, because a step can
+ * move anything — a field, a whole card, an order. (The team surface rebuilds itself: it subscribes
+ * to the store and treats every undo/redo as a rebuild.) Then the step says which field it was about,
+ * and the user is taken back in front of it instead of being left guessing what just changed.
+ */
+export function stepHistory(context: UiContext, direction: "undo" | "redo"): void {
+  const mutation = direction === "undo" ? context.store.undo() : context.store.redo();
+  if (!mutation) return;
+  bindStaticInputs(context);
+  renderDynamicControls(context);
+  showToast(`„${mutation.history.label}“ wurde ${direction === "undo" ? "rückgängig gemacht" : "wiederhergestellt"}.`);
+  if (mutation.history.target) navigateToEditorTarget(context, mutation.history.target);
+}
+
+function jumpToEditorTarget(context: UiContext, raw: string): void {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (isPreviewTargetShape(parsed)) navigateToEditorTarget(context, parsed);
+  } catch { /* a malformed target on our own surface is a bug, never a user error */ }
 }
 
 export function handleInput(context: UiContext, event: Event): void {
