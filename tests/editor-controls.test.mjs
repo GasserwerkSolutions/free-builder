@@ -377,3 +377,221 @@ test("der Zoom-Schutz für Android Chrome steht im Stylesheet", async () => {
   assert.match(mobileBlock, /\.field input[^}]*font-size: 16px/, "unter 16px zoomt Android Chrome beim Fokus hinein und nicht wieder heraus");
   assert.match(mobileBlock, /\.mode-switch \{ display: flex; \}/);
 });
+
+// --- Befunde des adversarialen Reviews ----------------------------------------------------------
+
+test("wiederholtes Strg + Z macht weiter rückgängig, obwohl der Schritt den Fokus ins Textfeld legt", async () => {
+  const { document, store, cleanup } = await bootEditor();
+  type(document.querySelector('[data-bind="salon.city"]'), "Winterthur");
+  type(document.querySelector('[data-bind="salon.tagline"]'), "Neuer Zusatz");
+
+  const outside = document.getElementById("undoButton");
+  outside.focus();
+  assert.equal(keydown(outside, "z", { ctrlKey: true }).defaultPrevented, true);
+  assert.equal(store.snapshot.salon.tagline, "Coiffeur in Zürich");
+  assert.equal(document.activeElement.getAttribute("data-bind"), "salon.tagline", "der Schritt setzt den Fokus in sein Feld");
+
+  // Genau hier war Schluss: im frisch gerenderten Feld hat der Browser keine eigene Texthistorie.
+  const second = keydown(document.activeElement, "z", { ctrlKey: true });
+  assert.equal(second.defaultPrevented, true, "der zweite Druck gehört weiterhin dem Editor");
+  assert.equal(store.snapshot.salon.city, "Zürich");
+  assert.equal(store.canUndo, false, "beide Schritte sind zurückgenommen");
+  cleanup();
+});
+
+test("nach echtem Tippen im Sprungziel gehört Strg + Z wieder dem Browser", async () => {
+  const { document, store, cleanup } = await bootEditor();
+  type(document.querySelector('[data-bind="salon.city"]'), "Winterthur");
+  type(document.querySelector('[data-bind="salon.tagline"]'), "Neuer Zusatz");
+  const outside = document.getElementById("undoButton");
+  outside.focus();
+  keydown(outside, "z", { ctrlKey: true });
+
+  const field = document.activeElement;
+  type(field, "Von Hand getippt", { commit: false });
+  const revision = store.revision;
+  const event = keydown(field, "z", { ctrlKey: true });
+  assert.equal(event.defaultPrevented, false, "eine echte Eingabe gibt die Texthistorie an den Browser zurück");
+  assert.equal(store.revision, revision);
+  assert.equal(store.snapshot.salon.tagline, "Von Hand getippt");
+  cleanup();
+});
+
+test("auch nach einem Sprung aus der Mängelliste bleibt Strg + Z bedienbar", async () => {
+  const { document, store, cleanup } = await bootEditor();
+  type(document.querySelector('[data-bind="salon.name"]'), "");
+  click(document.querySelector('[data-panel-target="publish"]'));
+  click([...document.querySelectorAll(".readiness-result")][0]);
+  assert.equal(document.activeElement.getAttribute("data-bind"), "salon.name");
+
+  const event = keydown(document.activeElement, "z", { ctrlKey: true });
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(store.snapshot.salon.name, "Studio Miro");
+  cleanup();
+});
+
+test("Strg + Z wirkt auch im Zeitfeld, das gar keine Browser-Texthistorie hat", async () => {
+  const { document, store, cleanup } = await bootEditor();
+  click(document.querySelector('[data-panel-target="hours"]'));
+  const tuesday = () => store.snapshot.businessHours.find((day) => day.dayOfWeek === 2);
+  const input = document.querySelector('#hoursList [data-day-of-week="2"] [data-hour-field="from"]');
+  type(input, "10:30", { commit: false });
+  assert.equal(tuesday().ranges[0].from, "10:30");
+
+  input.focus();
+  const event = keydown(input, "z", { ctrlKey: true });
+  assert.equal(event.defaultPrevented, true, "sonst ist die Taste im ganzen Zeiten-Editor tot");
+  assert.equal(tuesday().ranges[0].from, "09:00");
+  cleanup();
+});
+
+test("Cmd + Y bleibt beim Browser, Strg + Y wiederholt weiterhin", async () => {
+  const { document, store, cleanup } = await bootEditor();
+  type(document.querySelector('[data-bind="salon.city"]'), "Winterthur");
+  const outside = document.getElementById("undoButton");
+  outside.focus();
+  keydown(outside, "z", { ctrlKey: true });
+  assert.equal(store.snapshot.salon.city, "Zürich");
+
+  // Auf macOS ist Cmd + Y „Verlauf anzeigen“ — das gehört dem Browser.
+  const hijacked = keydown(outside, "y", { metaKey: true });
+  assert.equal(hijacked.defaultPrevented, false);
+  assert.equal(store.snapshot.salon.city, "Zürich", "Cmd + Y stellt nichts wieder her");
+
+  keydown(outside, "y", { ctrlKey: true });
+  assert.equal(store.snapshot.salon.city, "Winterthur");
+  cleanup();
+});
+
+test("bei offenem Bottom-Sheet ändert Strg + Z den Entwurf dahinter nicht", async () => {
+  const { document, store, cleanup } = await bootEditor({ mobile: true });
+  type(document.querySelector('[data-bind="salon.city"]'), "Winterthur");
+  click(document.querySelector("[data-sheet-open]"));
+  assert.equal(document.getElementById("sectionSheet").hidden, false);
+
+  const revision = store.revision;
+  const event = keydown(document.body, "z", { ctrlKey: true });
+  assert.equal(event.defaultPrevented, false);
+  assert.equal(store.revision, revision);
+  assert.equal(store.snapshot.salon.city, "Winterthur");
+  cleanup();
+});
+
+test("unter der Mobilgrenze wirkt der eingeklappte Zustand nicht und kehrt darüber zurück", async () => {
+  const { document, setViewportMobile, cleanup } = await bootEditor({ preferences: { "gasserwerk-salon-sidebar-collapsed-v1": "true" } });
+  const surface = document.getElementById("controlSurface");
+  const stage = document.getElementById("surfaceStage");
+  assert.equal(surface.classList.contains("is-collapsed"), true);
+
+  // Verschmälern, Tabletdrehung, Split-Screen: die Media-Query kippt ohne Neuladen.
+  setViewportMobile(true);
+  assert.equal(surface.classList.contains("is-collapsed"), false, "sonst bleibt zwischen Kopfzeile und Modusleiste nichts übrig");
+  assert.equal(document.getElementById("builder-main").classList.contains("is-sidebar-collapsed"), false);
+  assert.equal(stage.getAttribute("aria-hidden"), "false");
+
+  setViewportMobile(false);
+  assert.equal(surface.classList.contains("is-collapsed"), true, "der gemerkte Desktop-Zustand bleibt erhalten");
+  cleanup();
+});
+
+test("ein gemerkter Einklapp-Zustand wird auf dem Handy gar nicht erst angewendet", async () => {
+  const { document, cleanup } = await bootEditor({ mobile: true, preferences: { "gasserwerk-salon-sidebar-collapsed-v1": "true" } });
+  assert.equal(document.getElementById("controlSurface").classList.contains("is-collapsed"), false);
+  assert.equal(document.getElementById("surfaceStage").getAttribute("aria-hidden"), "false");
+  assert.equal(document.querySelector('[data-panel="salon"]').hidden, false, "der Bearbeitungsmodus zeigt etwas");
+  cleanup();
+});
+
+test("ein Ziehen, dessen Karte zwischendurch neu gebaut wurde, bricht ab statt falsch einzusortieren", async () => {
+  const { document, store, cleanup } = await bootEditor();
+  const before = serviceIds(store);
+  stackRects(serviceCards(document));
+  const handle = handleOf(serviceCards(document)[0]);
+  pointer(handle, "pointerdown", { clientY: 10 });
+
+  // Alt + Pfeil baut die Liste neu auf; die gezogene Karte hängt danach nicht mehr im Dokument.
+  keydown(handle, "ArrowDown", { altKey: true });
+  const afterStep = serviceIds(store);
+  assert.deepEqual(afterStep, [before[1], before[0], before[2]]);
+  stackRects(serviceCards(document));
+
+  // Der Zeiger lebt weiter und wird über der unteren Hälfte der zweiten Karte losgelassen.
+  pointer(document.body, "pointermove", { clientY: 160 });
+  pointer(document.body, "pointerup", { clientY: 160 });
+  assert.deepEqual(serviceIds(store), afterStep, "kein stiller Sprung auf eine falsche Position");
+  assert.equal(document.querySelector(".is-drop-target-before, .is-drop-target-after"), null);
+  assert.match(document.getElementById("previewAnnouncer").textContent, /abgebrochen/);
+  cleanup();
+});
+
+test("ein abgerissener Zeigerstrom lässt keinen Ziehzustand zurück", async () => {
+  const { window, document, store, cleanup } = await bootEditor();
+  stackRects(serviceCards(document));
+  const handle = handleOf(serviceCards(document)[0]);
+  pointer(handle, "pointerdown", { clientY: 10 });
+  pointer(handle, "pointermove", { clientY: 160 });
+  assert.ok(document.querySelector(".is-dragging"), "das Ziehen läuft");
+
+  window.dispatchEvent(new window.Event("blur"));
+  assert.equal(document.querySelector(".is-dragging"), null, "ohne pointerup bliebe die Markierung sonst stehen");
+  assert.equal(document.querySelector(".is-drop-target-before, .is-drop-target-after"), null);
+
+  const revision = store.revision;
+  pointer(handle, "pointerup", { clientY: 160 });
+  assert.equal(store.revision, revision, "ein spätes Loslassen verschiebt nichts mehr");
+  cleanup();
+});
+
+test("das Umbenennen aktualisiert auch die Beschriftung der Umsortier-Bedienung", async () => {
+  const { document, cleanup } = await bootEditor();
+  const card = serviceCards(document)[0];
+  type(card.querySelector('[data-service-field="name"]'), "Herrenschnitt kurz", { commit: false });
+  assert.equal(card.getAttribute("aria-label"), "Leistung „Herrenschnitt kurz“, Position 1 von 3");
+  assert.equal(card.querySelector('[data-reorder-direction="down"]').getAttribute("aria-label"), "Leistung „Herrenschnitt kurz“ nach unten");
+  assert.match(handleOf(card).getAttribute("aria-label"), /^Leistung „Herrenschnitt kurz“ ziehen/);
+  cleanup();
+});
+
+test("nach einem Klick auf den Pfeilknopf bleibt der Fokus auf dem Pfeilknopf", async () => {
+  const { document, store, cleanup } = await bootEditor();
+  const down = serviceCards(document)[0].querySelector('[data-reorder-direction="down"]');
+  down.focus();
+  click(down);
+  assert.equal(document.activeElement.dataset.reorderDirection, "down", "zweimal „↓“ per Tastatur muss gehen");
+  assert.equal(document.activeElement.closest("[data-service-card]").dataset.serviceId, store.snapshot.services[1].clientId);
+
+  // Am Listenende ist der Pfeil gesperrt; dann übernimmt der Griff, damit der Fokus nicht verfällt.
+  click(document.activeElement);
+  assert.equal(document.activeElement.hasAttribute("data-reorder-handle"), true);
+  cleanup();
+});
+
+test("destroy() gibt Modusklassen und inert-Markierungen zurück", async () => {
+  const { document, ui, cleanup } = await bootEditor({ mobile: true });
+  const workspace = document.getElementById("builder-main");
+  const previewArea = document.querySelector(".preview-area");
+  assert.equal(workspace.classList.contains("is-mode-edit"), true);
+  assert.equal(previewArea.hasAttribute("inert"), true);
+
+  ui.destroy();
+  assert.equal(workspace.classList.contains("is-mode-edit"), false);
+  assert.equal(previewArea.hasAttribute("inert"), false);
+  assert.equal(previewArea.hasAttribute("aria-hidden"), false);
+  cleanup();
+});
+
+test("die Zusammenfassung verspricht keine Exportsperre, und ein Export mit Blockern sagt es", async () => {
+  const { document, cleanup } = await bootEditor();
+  click(document.querySelector('[data-panel-target="publish"]'));
+  const summary = document.getElementById("readinessSummary");
+  assert.doesNotMatch(summary.textContent, /kann exportiert werden/, "das Wort war eine Bedingung, die niemand durchsetzt");
+
+  type(document.querySelector('[data-bind="salon.name"]'), "");
+  click(document.querySelector('[data-panel-target="publish"]'));
+  assert.match(summary.className, /is-blocked/);
+  clearToast(document);
+
+  click([...document.querySelectorAll('[data-action="export"]')].at(-1));
+  assert.match(toastText(document) ?? "", /offen/, "ein Export mit Blockern darf nicht klingen, als sei alles in Ordnung");
+  cleanup();
+});

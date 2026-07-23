@@ -79,6 +79,44 @@ export function writePreference(key: string, value: string): void {
   try { localStorage.setItem(key, value); } catch { /* a preference is not worth an error */ }
 }
 
+/**
+ * Whose undo stack the caret in a text control belongs to.
+ *
+ * A jump — an undone step, an entry in the publish list, a tap in the preview — puts the focus into a
+ * field the user has not typed a single character into. That control's browser text history is
+ * therefore empty, and handing the next Ctrl/Cmd + Z to the browser would make it do nothing at all.
+ * Until a real edit lands in that very element, the history stays where the focus came from: the
+ * store. One element, remembered by identity — nothing is inferred about any other field.
+ */
+let navigatedField: HTMLElement | null = null;
+
+/** Remember the field the editor itself just focused. Null forgets the last one. */
+export function markNavigatedField(element: HTMLElement | null): void {
+  navigatedField = element;
+}
+
+/** True while this element still holds a caret the editor placed and the user has not used yet. */
+export function isNavigatedField(element: Element | null): boolean {
+  if (navigatedField && !navigatedField.isConnected) navigatedField = null;
+  return element !== null && navigatedField === element;
+}
+
+/** The first real edit in the field gives the browser its own text history back. */
+export function releaseNavigatedField(element: EventTarget | null): void {
+  if (element === navigatedField) navigatedField = null;
+}
+
+/**
+ * Make a heading focusable for exactly one visit. A jump has to be able to land on it, but a
+ * tabindex left behind would add a permanent stop to the tab order that nothing on the surface asked
+ * for — so the attribute is given back as soon as the focus leaves again.
+ */
+export function makeTransientlyFocusable(element: HTMLElement): void {
+  if (element.hasAttribute("tabindex")) return;
+  element.tabIndex = -1;
+  element.addEventListener("blur", () => element.removeAttribute("tabindex"), { once: true });
+}
+
 /** Escape a client id for use inside a CSS attribute selector, with a fallback for old engines. */
 export function cssEscape(value: string): string {
   return typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");

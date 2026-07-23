@@ -1,11 +1,11 @@
 import { closeSectionSheet, initMobileModes, isMobileModeActive, isSectionSheetOpen, markPreviewReturnAvailable } from "./mobile-modes.js";
 import { navigateToEditorTarget } from "./preview-navigation.js";
 import { PreviewRuntime } from "./preview-runtime.js";
-import { cancelActiveDrag, handleReorderKeydown, handleReorderPointerDown, handleReorderPointerEnd, handleReorderPointerMove } from "./reorder-actions.js";
+import { cancelActiveDrag, handleReorderKeydown, handleReorderPointerDown, handleReorderPointerEnd, handleReorderPointerLost, handleReorderPointerMove } from "./reorder-actions.js";
 import { initSidebar } from "./sidebar.js";
 import { handleClick, handleInput, stepHistory } from "./ui-actions.js";
 import { bindStaticInputs, renderDynamicControls, renderSaveState, updateMigrationNotice, updateReadiness, } from "./ui-render.js";
-import { createUiContext, showToast } from "./ui-shared.js";
+import { createUiContext, isNavigatedField, markNavigatedField, releaseNavigatedField, showToast } from "./ui-shared.js";
 const PREVIEW_STATUS_MESSAGES = {
     stale: "Die Vorschau antwortet nicht mehr und zeigt nicht mehr deinen aktuellen Stand. Deine Änderungen sind gespeichert — mit der nächsten Änderung wird die Vorschau erneut aufgebaut.",
     live: "Die Vorschau ist wieder aktuell.",
@@ -14,19 +14,33 @@ const PREVIEW_STATUS_MESSAGES = {
 // Ctrl/Cmd + Z away from it would be a regression for the most ordinary thing a user does: fix a typo
 // while typing. A native text undo produces an ordinary input event, so it reaches the draft through
 // the normal path and the two histories cannot drift apart.
-const TEXT_ENTRY_SELECTOR = 'textarea, [contenteditable="true"], input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="file"])';
+//
+// Date and time controls are deliberately NOT in here. They look like inputs but hold a set of spin
+// fields, not a text caret, and no browser keeps a text history for them — leaving Ctrl + Z to the
+// browser there would make the key dead in the whole opening-hours editor.
+const TEXT_ENTRY_SELECTOR = 'textarea, [contenteditable="true"], input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="file"])'
+    + ':not([type="time"]):not([type="date"]):not([type="datetime-local"]):not([type="month"]):not([type="week"])';
+const DRAG_INTERRUPTED_MESSAGE = "Verschieben abgebrochen.";
 export class BuilderUi {
     context;
     // Every listener is kept as one stable reference, because destroy() can only take back a listener
     // it can still name.
     onMessage = (event) => { this.handlePreviewMessage(event); };
     onClick = (event) => { handleClick(this.context, event); };
-    onInput = (event) => { handleInput(this.context, event); };
+    onInput = (event) => { releaseNavigatedField(event.target); handleInput(this.context, event); };
     onKeydown = (event) => { this.handleKeydown(event); };
     onPointerDown = (event) => { handleReorderPointerDown(this.context, event); };
     onPointerMove = (event) => { handleReorderPointerMove(this.context, event); };
     onPointerUp = (event) => { handleReorderPointerEnd(this.context, event); };
     onPointerCancel = (event) => { handleReorderPointerEnd(this.context, event, true); };
+    // A drag only ever ends through a pointer event — and those stop arriving as soon as the window
+    // loses the pointer: an alt-tab, a tab switch, a capture the browser takes back. Without these three
+    // the card would keep its dragging state, the drop marker would stay on the list and the next click
+    // anywhere would still be answering a gesture the user abandoned minutes ago.
+    onWindowBlur = () => { cancelActiveDrag(this.context, DRAG_INTERRUPTED_MESSAGE); };
+    onVisibilityChange = () => { if (document.hidden)
+        cancelActiveDrag(this.context, DRAG_INTERRUPTED_MESSAGE); };
+    onLostPointerCapture = (event) => { handleReorderPointerLost(this.context, event, DRAG_INTERRUPTED_MESSAGE); };
     onPageHide = () => {
         void this.context.store.flush().catch((error) => console.error("Final draft flush failed.", error));
     };
@@ -83,6 +97,9 @@ export class BuilderUi {
         document.addEventListener("pointermove", this.onPointerMove);
         document.addEventListener("pointerup", this.onPointerUp);
         document.addEventListener("pointercancel", this.onPointerCancel);
+        document.addEventListener("lostpointercapture", this.onLostPointerCapture);
+        document.addEventListener("visibilitychange", this.onVisibilityChange);
+        window.addEventListener("blur", this.onWindowBlur);
         window.addEventListener("message", this.onMessage);
         window.addEventListener("pagehide", this.onPageHide);
         if (options.migratedFromV1)
@@ -104,9 +121,13 @@ export class BuilderUi {
         document.removeEventListener("pointermove", this.onPointerMove);
         document.removeEventListener("pointerup", this.onPointerUp);
         document.removeEventListener("pointercancel", this.onPointerCancel);
+        document.removeEventListener("lostpointercapture", this.onLostPointerCapture);
+        document.removeEventListener("visibilitychange", this.onVisibilityChange);
+        window.removeEventListener("blur", this.onWindowBlur);
         window.removeEventListener("message", this.onMessage);
         window.removeEventListener("pagehide", this.onPageHide);
         cancelActiveDrag(this.context);
+        markNavigatedField(null);
         this.unsubscribeDraft?.();
         this.unsubscribeDraft = null;
         this.unsubscribeSave?.();
@@ -125,9 +146,13 @@ export class BuilderUi {
     handleKeydown(event) {
         if (handleReorderKeydown(this.context, event))
             return;
-        if (event.key === "Escape" && isSectionSheetOpen()) {
-            event.preventDefault();
-            closeSectionSheet(this.context);
+        // The bottom sheet is modal. The only key it answers is the one that closes it — anything else
+        // would change a draft the user cannot see behind it.
+        if (isSectionSheetOpen()) {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                closeSectionSheet(this.context);
+            }
             return;
         }
         if (event.defaultPrevented || event.altKey)
@@ -135,11 +160,17 @@ export class BuilderUi {
         if (!(event.ctrlKey || event.metaKey))
             return;
         const key = event.key.toLowerCase();
-        const direction = key === "z" ? (event.shiftKey ? "redo" : "undo") : key === "y" && !event.shiftKey ? "redo" : null;
+        // Ctrl + Y is the second learned redo on Windows. Cmd + Y is "show history" on macOS and stays
+        // with the browser, so the modifier is checked rather than assumed.
+        const redoByY = key === "y" && event.ctrlKey && !event.metaKey && !event.shiftKey;
+        const direction = key === "z" ? (event.shiftKey ? "redo" : "undo") : redoByY ? "redo" : null;
         if (!direction)
             return;
-        // Inside a text control the browser's own undo wins; see TEXT_ENTRY_SELECTOR.
-        if (event.target instanceof Element && event.target.closest(TEXT_ENTRY_SELECTOR))
+        // Inside a text control the browser's own undo wins — but only once the user has actually typed
+        // there. A field the editor just jumped into has an empty browser history, and leaving the key to
+        // it would turn every second Ctrl + Z into a no-op. See TEXT_ENTRY_SELECTOR and isNavigatedField.
+        const textEntry = event.target instanceof Element ? event.target.closest(TEXT_ENTRY_SELECTOR) : null;
+        if (textEntry && !isNavigatedField(textEntry))
             return;
         event.preventDefault();
         stepHistory(this.context, direction);

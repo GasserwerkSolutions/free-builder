@@ -320,6 +320,18 @@ test("ein Vorschau-Ziel auf Kundenstimme und Person trifft die richtige Karte", 
   cleanup();
 });
 
+test("ein Sprung auf eine Überschrift gibt den Tabstopp beim Verlassen wieder zurück", async () => {
+  const { document, store, cleanup } = await bootEditor();
+  navigateToEditorTarget(navContext(document, store), { kind: "panel", panel: "hours" });
+  const heading = document.activeElement;
+  assert.equal(heading.tagName, "H2");
+  assert.equal(heading.getAttribute("tabindex"), "-1", "sonst wäre die Überschrift gar nicht fokussierbar");
+
+  document.querySelector('[data-bind="salon.name"]').focus();
+  assert.equal(heading.hasAttribute("tabindex"), false, "eine Überschrift bleibt kein dauerhafter Tabstopp");
+  cleanup();
+});
+
 test("ein Ziel auf einen gelöschten Eintrag landet ruhig auf der Bereichsüberschrift", async () => {
   const { document, store, cleanup } = await bootEditor();
   navigateToEditorTarget(navContext(document, store), { kind: "service", serviceClientId: "gibt-es-nicht", field: "name" });

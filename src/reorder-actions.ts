@@ -15,6 +15,10 @@ import { renderTeam } from "./team-ui.js";
 // the order of a collection is already the order of its array.
 
 export type ReorderTarget = { collection: DraftCollection; clientId: string };
+/** Which control a finished move hands the focus back to — the one the user actually operated. */
+type ReorderFocus = "handle" | "up" | "down";
+
+const STALE_DRAG_MESSAGE = "Die Liste hat sich während des Verschiebens geändert. Das Verschieben wurde abgebrochen.";
 
 type ActiveDrag = {
   pointerId: number;
@@ -83,7 +87,9 @@ export function handleReorderClick(context: UiContext, element: Element): boolea
   const direction = button.dataset.reorderDirection;
   const target = resolveReorderTarget(button);
   if (!target || (direction !== "up" && direction !== "down")) return true;
-  stepReorder(context, target, direction);
+  // The focus goes back to the arrow that was pressed, not to the handle: pressing "down" twice in a
+  // row is the most ordinary keyboard reorder there is, and it has to work without re-aiming.
+  stepReorder(context, target, direction, direction);
   return true;
 }
 
@@ -127,6 +133,7 @@ export function handleReorderPointerDown(context: UiContext, event: PointerEvent
 export function handleReorderPointerMove(context: UiContext, event: PointerEvent): boolean {
   const drag = activeDrags.get(context);
   if (!drag || drag.pointerId !== event.pointerId) return false;
+  if (!dragIsLive(drag)) { cancelActiveDrag(context, STALE_DRAG_MESSAGE); return true; }
   const candidates = reorderItems(drag.container).filter((item) => item !== drag.item);
   drag.targetIndex = pointerInsertionIndex(event.clientY, candidates.map((item) => {
     const rect = item.getBoundingClientRect();
@@ -144,9 +151,10 @@ export function handleReorderPointerMove(context: UiContext, event: PointerEvent
 export function handleReorderPointerEnd(context: UiContext, event: PointerEvent, cancelled = false): boolean {
   const drag = activeDrags.get(context);
   if (!drag || drag.pointerId !== event.pointerId) return false;
+  if (!dragIsLive(drag)) { cancelActiveDrag(context, STALE_DRAG_MESSAGE); event.preventDefault(); return true; }
   const { target, targetIndex, originalIndex } = drag;
-  releasePointerCapture(drag);
   cleanupDrag(context, drag);
+  releasePointerCapture(drag);
   if (cancelled) announce(context, "Verschieben abgebrochen.");
   else if (targetIndex === originalIndex) announce(context, "Reihenfolge unverändert.");
   else moveReorderTarget(context, target, targetIndex);
@@ -155,10 +163,32 @@ export function handleReorderPointerEnd(context: UiContext, event: PointerEvent,
 }
 
 /**
+ * A pointer capture the browser takes back ends the gesture: no pointerup will follow, so the drag
+ * can never be finished and must not stay on the surface as if it could.
+ */
+export function handleReorderPointerLost(context: UiContext, event: PointerEvent, message: string): void {
+  const drag = activeDrags.get(context);
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  cancelActiveDrag(context, message);
+}
+
+/**
+ * Is the card this drag started on still the card the list is showing?
+ *
+ * A list can be rebuilt while a drag runs — an Alt + arrow step, an undo, a removal elsewhere. The
+ * dragged element is then detached, `candidates` no longer excludes it and every index the drop would
+ * compute is about a list that no longer exists. That produced a silently wrong position with no
+ * error and no toast, so the drag ends here instead of guessing.
+ */
+function dragIsLive(drag: ActiveDrag): boolean {
+  return drag.item.isConnected && drag.container.isConnected && drag.container.contains(drag.item);
+}
+
+/**
  * The single write path of this module: verify the move as a `move-collection-item`, re-render the
  * list and put the focus back on the handle of the card that just moved.
  */
-export function moveReorderTarget(context: UiContext, target: ReorderTarget, nextIndex: number): boolean {
+export function moveReorderTarget(context: UiContext, target: ReorderTarget, nextIndex: number, focus: ReorderFocus = "handle"): boolean {
   const surface = SURFACES[target.collection];
   const currentIndex = itemIndex(context, target);
   const count = itemCount(context, target);
@@ -177,13 +207,13 @@ export function moveReorderTarget(context: UiContext, target: ReorderTarget, nex
   surface.render(context);
   if (!mutation) return false;
   announce(context, `${movedLabel} an Position ${nextIndex + 1} von ${count} verschoben.`);
-  focusHandle(surface.cardFor(target.clientId));
+  focusAfterMove(surface.cardFor(target.clientId), focus);
   return true;
 }
 
-function stepReorder(context: UiContext, target: ReorderTarget, direction: ReorderDirection): void {
+function stepReorder(context: UiContext, target: ReorderTarget, direction: ReorderDirection, focus: ReorderFocus = "handle"): void {
   const nextIndex = adjacentReorderIndex(itemIndex(context, target), direction, itemCount(context, target));
-  if (nextIndex !== null) moveReorderTarget(context, target, nextIndex);
+  if (nextIndex !== null) moveReorderTarget(context, target, nextIndex, focus);
 }
 
 function resolveReorderTarget(element: Element): ReorderTarget | null {
@@ -207,9 +237,18 @@ function label(context: UiContext, target: ReorderTarget): string {
   return SURFACES[target.collection].label(context.store.snapshot, target.clientId);
 }
 
-function focusHandle(cardSelector: string): void {
-  const handle = document.querySelector<HTMLButtonElement>(`${cardSelector} [data-reorder-handle]`);
-  if (handle && !handle.disabled) handle.focus({ preventScroll: true });
+/**
+ * Put the focus back on the control the move came from. At the end of a list that control is disabled
+ * — an arrow that can no longer point anywhere — so the handle of the same card takes over rather than
+ * letting the focus fall back to the document.
+ */
+function focusAfterMove(cardSelector: string, preferred: ReorderFocus): void {
+  const card = document.querySelector<HTMLElement>(cardSelector);
+  if (!card) return;
+  const arrow = preferred === "handle" ? null : card.querySelector<HTMLButtonElement>(`[data-reorder-direction="${preferred}"]`);
+  const handle = card.querySelector<HTMLButtonElement>("[data-reorder-handle]");
+  const destination = arrow && !arrow.disabled ? arrow : handle && !handle.disabled ? handle : null;
+  destination?.focus({ preventScroll: true });
 }
 
 function reorderItems(container: HTMLElement): HTMLElement[] {
@@ -221,16 +260,18 @@ function clearDropMarkers(container: HTMLElement): void {
 function releasePointerCapture(drag: ActiveDrag): void {
   try { drag.handle.releasePointerCapture(drag.pointerId); } catch { /* see setPointerCapture above */ }
 }
+// The registration goes first: releasing a pointer capture makes the browser fire lostpointercapture,
+// and that listener must find no drag left to cancel a second time.
 function cleanupDrag(context: UiContext, drag: ActiveDrag): void {
+  activeDrags.delete(context);
   drag.item.classList.remove("is-dragging");
   drag.handle.classList.remove("is-dragging-handle");
   clearDropMarkers(drag.container);
-  activeDrags.delete(context);
 }
 export function cancelActiveDrag(context: UiContext, message?: string): void {
   const drag = activeDrags.get(context);
   if (!drag) return;
-  releasePointerCapture(drag);
   cleanupDrag(context, drag);
+  releasePointerCapture(drag);
   if (message) announce(context, message);
 }

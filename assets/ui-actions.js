@@ -8,7 +8,8 @@ import { historyDescriptor, inputValue, safeMutate, showToast } from "./ui-share
 import { closeSectionSheet, openSectionSheet, setMobileMode } from "./mobile-modes.js";
 import { ensureEditorOpen } from "./sidebar.js";
 import { handleReorderClick } from "./reorder-actions.js";
-import { bindStaticInputs, renderDynamicControls, renderHours, renderHoursErrors, renderPreview, renderServices, renderTestimonials, setViewport, showPanel, syncPresetInputs, updateReadiness, } from "./ui-render.js";
+import { evaluateReadiness } from "./readiness.js";
+import { bindStaticInputs, configureReorderControls, renderDynamicControls, renderHours, renderHoursErrors, renderPreview, renderServices, renderTestimonials, setViewport, showPanel, syncPresetInputs, updateReadiness, } from "./ui-render.js";
 export function handleClick(context, event) {
     const target = event.target;
     if (!(target instanceof Element))
@@ -143,13 +144,8 @@ export function handleInput(context, event) {
             intent: { type: "set-service-field", serviceClientId, field: serviceField },
             history: historyDescriptor("Leistung bearbeitet", { key: `service:${serviceClientId}:${serviceField}`, ...serviceTarget(serviceClientId, serviceField) }),
         });
-        if (serviceField === "name") {
-            const number = serviceCard?.querySelector("[data-service-number]");
-            if (number) {
-                const index = context.store.snapshot.services.findIndex((service) => service.clientId === serviceClientId);
-                number.textContent = `${index + 1}. ${target.value || "Leistung"}`;
-            }
-        }
+        if (serviceField === "name")
+            renameServiceCard(context, serviceCard, serviceClientId, target.value);
         return;
     }
     const testimonialField = target.dataset.testimonialField;
@@ -163,6 +159,8 @@ export function handleInput(context, event) {
             intent: { type: "set-testimonial-field", testimonialClientId, field: testimonialField },
             history: historyDescriptor("Kundenstimme bearbeitet", { key: `testimonial:${testimonialClientId}:${testimonialField}`, target: { kind: "testimonial", testimonialClientId, field: testimonialField } }),
         });
+        if (testimonialField === "name")
+            renameTestimonialCard(context, target.closest("[data-testimonial-card]"), testimonialClientId, target.value);
         return;
     }
     const hourField = target.dataset.hourField;
@@ -184,6 +182,31 @@ export function handleInput(context, event) {
             renderHoursErrors(context);
         }
     }
+}
+/**
+ * A rename has to reach every place that carries the name.
+ *
+ * The visible heading of the card is the obvious one; the accessible labels of the reorder controls
+ * are the one that used to be missed. They are only built during a full render, so without this a
+ * screen reader kept announcing the previous name — "Leistung „Damenschnitt“, Position 1 von 3" on a
+ * card that visibly reads "1. Herrenschnitt kurz" — until something else rebuilt the list.
+ */
+function renameServiceCard(context, card, clientId, value) {
+    const services = context.store.snapshot.services;
+    const index = services.findIndex((service) => service.clientId === clientId);
+    if (!card || index < 0)
+        return;
+    const number = card.querySelector("[data-service-number]");
+    if (number)
+        number.textContent = `${index + 1}. ${value || "Leistung"}`;
+    configureReorderControls(card, `Leistung „${value.trim() || "Ohne Namen"}“`, index, services.length);
+}
+function renameTestimonialCard(context, card, clientId, value) {
+    const items = context.store.snapshot.testimonials.items;
+    const index = items.findIndex((item) => item.clientId === clientId);
+    if (!card || index < 0)
+        return;
+    configureReorderControls(card, `Kundenstimme „${value.trim() || "Ohne Namen"}“`, index, items.length);
 }
 // A history step remembers which editor field it was about, so a later undo can put the user back in
 // front of it. Only a target the preview contract recognises is recorded — an unknown binding gets no
@@ -302,7 +325,13 @@ function exportHtml(context) {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 0);
-    showToast("Die Website wurde als einzelne HTML-Datei exportiert. Die spätere SaaS-Buchung ist darin bewusst noch nicht aktiviert.");
+    // The export is never refused — the gate for that belongs to the later publish step. But it must
+    // not read like a clean bill of health either: a file exported with open blockers says so, and says
+    // where the open points are.
+    const summary = evaluateReadiness(context.store.snapshot);
+    showToast(summary.ready
+        ? "Die Website wurde als einzelne HTML-Datei exportiert. Die spätere SaaS-Buchung ist darin bewusst noch nicht aktiviert."
+        : `Die Website wurde exportiert, obwohl ${summary.errorCount} ${summary.errorCount === 1 ? "Punkt noch offen ist" : "Punkte noch offen sind"}. Unter „Veröffentlichen“ steht, was fehlt.`);
 }
 async function copySalonData(context) {
     try {

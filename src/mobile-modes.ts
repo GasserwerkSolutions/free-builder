@@ -1,4 +1,4 @@
-import { announce, readPreference, showToast, writePreference, type MobileMode, type UiContext } from "./ui-shared.js";
+import { announce, makeTransientlyFocusable, readPreference, showToast, writePreference, type MobileMode, type UiContext } from "./ui-shared.js";
 
 // The phone is a different device, not a narrow desktop.
 //
@@ -49,7 +49,26 @@ export function initMobileModes(context: UiContext): () => void {
     document.removeEventListener("focusin", onFocusIn);
     document.removeEventListener("focusout", onFocusOut);
     window.visualViewport?.removeEventListener("resize", onViewportResize);
+    resetMobileMode(context);
   };
+}
+
+/**
+ * Give back everything the mobile modes put on the document. A destroyed editor that leaves an inert,
+ * aria-hidden surface behind would make the page unusable for whatever takes its place — and nothing
+ * would still be listening to undo it.
+ */
+function resetMobileMode(context: UiContext): void {
+  context.workspace.classList.remove("is-mode-edit", "is-mode-preview");
+  [
+    context.workspace,
+    context.controlSurface,
+    document.querySelector<HTMLElement>(".preview-area"),
+    document.querySelector<HTMLElement>(".topbar"),
+    document.querySelector<HTMLElement>(".mode-switch"),
+  ].forEach((element) => setInactive(element, false));
+  document.querySelector<HTMLElement>(".mode-switch")?.classList.remove("is-keyboard-hidden");
+  setPreviewReturnVisible(false);
 }
 
 export function isMobileModeActive(): boolean {
@@ -116,7 +135,7 @@ export function closeSectionSheet(context: UiContext, focusPanel = false): void 
   trigger?.setAttribute("aria-expanded", "false");
   if (focusPanel) {
     const heading = document.querySelector<HTMLElement>(".panel.is-active h1, .panel.is-active h2");
-    if (heading) { heading.tabIndex = -1; heading.focus(); return; }
+    if (heading) { makeTransientlyFocusable(heading); heading.focus(); return; }
   }
   trigger?.focus();
 }

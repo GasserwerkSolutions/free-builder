@@ -1,7 +1,7 @@
 import { isPreviewTarget, panelForTarget, type PreviewTarget } from "./preview-contract.js";
 import { ensureEditorOpen } from "./sidebar.js";
 import { showPanel } from "./ui-render.js";
-import { announce, cssEscape, type UiContext } from "./ui-shared.js";
+import { announce, cssEscape, makeTransientlyFocusable, markNavigatedField, type UiContext } from "./ui-shared.js";
 
 const HIGHLIGHT_MS = 1_800;
 const highlightTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
@@ -25,8 +25,11 @@ export function navigateToEditorTarget(context: UiContext, target: PreviewTarget
   const element = stillExists ? resolveEditorTarget(target) : null;
   const destination = element ?? document.querySelector<HTMLElement>(`[data-panel="${panel}"] h1, [data-panel="${panel}"] h2`);
   if (!destination) return;
-  if (destination.matches("h1, h2")) destination.tabIndex = -1;
+  if (destination.matches("h1, h2")) makeTransientlyFocusable(destination);
   destination.focus({ preventScroll: true });
+  // The caret in this field was placed by the editor, not by the user: until the user actually types
+  // there, Ctrl/Cmd + Z keeps stepping through the store instead of an empty browser text history.
+  markNavigatedField(destination);
   destination.scrollIntoView({ block: "center" });
   const running = highlightTimers.get(destination);
   if (running) clearTimeout(running);

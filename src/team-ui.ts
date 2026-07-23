@@ -252,6 +252,9 @@ export function installTeamUi(store: BuilderStore, repository: DraftRepository):
         const index = store.snapshot.staff.findIndex((person) => person.clientId === staffId);
         const title = staffCard?.querySelector<HTMLElement>("[data-staff-number]");
         if (title) title.textContent = `${index + 1}. ${target.value || "Person"}`;
+        // The reorder controls carry the person's name in their accessible labels, and they are only
+        // built on a full render — so a rename has to reach them here or they keep the old name.
+        if (staffCard && index >= 0) configureReorderControls(staffCard, `Person „${target.value.trim() || "Ohne Namen"}“`, index, store.snapshot.staff.length);
       }
       return;
     }

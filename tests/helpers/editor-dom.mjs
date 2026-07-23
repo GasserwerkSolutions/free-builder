@@ -42,6 +42,10 @@ const MOBILE_MEDIA = "(max-width: 700px)";
  * destructive paths (reset, copy day) go through it. `mobile` makes the mobile media query match, so
  * the two-mode surface can be driven the way a phone drives it. `preferences` seeds localStorage
  * before init, which is how a remembered sidebar state is reproduced.
+ *
+ * The returned `setViewportMobile` crosses the breakpoint the way a real device does — by changing
+ * what the media query answers and telling everyone who listens. That is the only way to reproduce
+ * narrowing, a tablet rotation or a split screen, none of which reload the editor.
  */
 export async function bootEditor(options = {}) {
   patchTimers();
@@ -50,12 +54,19 @@ export async function bootEditor(options = {}) {
   const { window } = dom;
   window.confirm = () => options.confirmAnswer ?? true;
   // jsdom implements neither of these; the mobile modes depend on both.
+  let mobile = Boolean(options.mobile);
+  const mediaListeners = new Set();
   window.matchMedia = (query) => ({
     media: query,
-    matches: Boolean(options.mobile) && query === MOBILE_MEDIA,
-    addEventListener() {},
-    removeEventListener() {},
+    get matches() { return mobile && query === MOBILE_MEDIA; },
+    addEventListener(type, listener) { if (type === "change" && query === MOBILE_MEDIA) mediaListeners.add(listener); },
+    removeEventListener(type, listener) { if (type === "change") mediaListeners.delete(listener); },
   });
+  const setViewportMobile = (next) => {
+    if (mobile === Boolean(next)) return;
+    mobile = Boolean(next);
+    for (const listener of [...mediaListeners]) listener({ media: MOBILE_MEDIA, matches: mobile });
+  };
   window.scrollTo = () => {};
   for (const [key, value] of Object.entries(options.preferences ?? {})) window.localStorage.setItem(key, value);
   globalThis.window = window;
@@ -74,6 +85,12 @@ export async function bootEditor(options = {}) {
   window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() { scrolledInto.push(this); };
   window.HTMLElement.prototype.scrollTo = () => {};
   for (const name of DOM_GLOBALS) if (window[name]) globalThis[name] = window[name];
+  // The export path hands the browser a blob URL. Node has no createObjectURL, and a hash href keeps
+  // jsdom's anchor click from attempting the navigation it does not implement.
+  if (typeof URL.createObjectURL !== "function") {
+    URL.createObjectURL = () => "#exported";
+    URL.revokeObjectURL = () => {};
+  }
 
   const repository = new MemoryDraftRepository();
   const draft = options.draft ?? (await import("../../assets/domain.js")).createDefaultDraft("2026-07-23T09:00:00.000Z");
@@ -87,7 +104,7 @@ export async function bootEditor(options = {}) {
     ui.destroy?.();
     window.close();
   };
-  return { dom, window, document: window.document, store, repository, ui, scrolledInto, cleanup };
+  return { dom, window, document: window.document, store, repository, ui, scrolledInto, setViewportMobile, cleanup };
 }
 
 /** Click the way a browser does: a bubbling, cancelable MouseEvent on the element itself. */
