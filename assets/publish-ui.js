@@ -34,7 +34,11 @@ export function installPublishUi(context, options = {}) {
     });
     const unsubscribeFlow = flow.subscribe((state) => render(elements, flow.address, state));
     // Every accepted draft change can turn a completed hand-over into an outdated one.
-    const unsubscribeStore = context.store.subscribe(() => flow.noteDraftChanged());
+    const unsubscribeStore = context.store.subscribe(() => {
+        flow.noteDraftChanged();
+        renderAssetStep(elements, context.store.snapshot);
+    });
+    renderAssetStep(elements, context.store.snapshot);
     const onClick = (event) => {
         const target = event.target;
         if (!(target instanceof Element))
@@ -114,7 +118,7 @@ function findElements() {
     const status = document.getElementById("publishStatus");
     if (!panel || !(email instanceof HTMLInputElement) || !(submit instanceof HTMLButtonElement) || !(retry instanceof HTMLButtonElement) || !status)
         return null;
-    return { panel, email, submit, retry, status };
+    return { panel, email, submit, retry, status, assetStep: document.getElementById("publishAssetStep") };
 }
 // --- rendering ----------------------------------------------------------------------------------
 const SUBMIT_LABELS = {
@@ -125,6 +129,19 @@ const SUBMIT_LABELS = {
     blocked: "Website veröffentlichen",
     failed: "Website veröffentlichen",
 };
+/**
+ * The place local image files will be handed over after authentication (plan §10.3 step 6).
+ *
+ * It is wired to the only honest signal there is — whether the draft references any assets at all —
+ * and stays hidden while there are none. Today there are never any: the builder has no image picker
+ * yet, that is phase F4. Announcing an upload step that cannot happen would be the same kind of
+ * promise this whole stage exists to remove, so the structure is here and the content is not.
+ */
+function renderAssetStep(elements, draft) {
+    if (!elements.assetStep)
+        return;
+    elements.assetStep.hidden = draft.assets.length === 0;
+}
 function render(elements, address, state) {
     const busy = state.phase === "checking" || state.phase === "sending";
     elements.submit.disabled = busy;

@@ -213,3 +213,86 @@ test("eine zu grosse Nutzlast wird gemeldet, ohne den Endpunkt zu belasten", asy
   assert.match(statusText(document), /256 KB/);
   cleanup();
 });
+
+// --- Ehrlichkeitspflichten -----------------------------------------------------------------------
+
+test("der Erfolg behauptet weder ein Konto noch eine zugestellte E-Mail", async () => {
+  const { document, cleanup } = await readyEditor({ publishTransport: ok });
+  await submitWith({ document }, "hallo@studio-miro.ch");
+  const text = statusText(document);
+
+  assert.match(text, /Abgeschickt am/);
+  assert.match(text, /Falls diese Adresse verwendbar ist/, "die konstante Antwort erlaubt keine Zusage");
+  assert.match(text, /Postfach/, "der Weg führt über die E-Mail weiter");
+  assert.doesNotMatch(text, /Konto (wurde )?(erstellt|angelegt)/i);
+  assert.doesNotMatch(text, /E-Mail wurde (ver|zuge)schickt/i);
+  assert.doesNotMatch(text, /veröffentlicht|ist online|ist live/i, "veröffentlicht wird erst nach der Aktivierung im SaaS");
+  cleanup();
+});
+
+test("ein erfolgreicher Versand erfindet keine intentId und lässt den Draft-Vertrag unberührt", async () => {
+  const { document, store, cleanup } = await readyEditor({ publishTransport: ok });
+  const before = structuredClone(store.snapshot.publication);
+  await submitWith({ document }, "hallo@studio-miro.ch");
+
+  assert.deepEqual(store.snapshot.publication, before, "der Server gibt keine intentId zurück — also wird auch keine notiert");
+  assert.equal(store.snapshot.publication.intentId, null);
+  assert.equal(store.snapshot.publication.state, "LOCAL", "lokal ist bestätigt worden: nichts");
+  assert.equal(store.snapshot.schemaVersion, 2);
+  cleanup();
+});
+
+test("nach dem Absenden erfährt der Benutzer, dass spätere Änderungen nicht mehr drüben ankommen", async () => {
+  const { document, cleanup } = await readyEditor({ publishTransport: ok });
+  await submitWith({ document }, "hallo@studio-miro.ch");
+  assert.doesNotMatch(statusText(document), /noch nicht drüben/i);
+
+  type(document.querySelector('[data-bind="salon.tagline"]'), "Coiffeur in Winterthur");
+  const text = statusText(document);
+  assert.match(text, /noch nicht drüben/i, "sonst editiert der Benutzer weiter und wundert sich");
+  assert.match(text, /Erneut senden/, "und er erfährt, wie er den neuen Stand nachreicht");
+  assert.equal(publishButton(document).textContent, "Erneut senden");
+  cleanup();
+});
+
+test("ein erneutes Senden nach einer Änderung räumt den Überholt-Hinweis wieder weg", async () => {
+  const { document, publishCalls, cleanup } = await readyEditor({ publishTransport: ok });
+  await submitWith({ document }, "hallo@studio-miro.ch");
+  type(document.querySelector('[data-bind="salon.tagline"]'), "Coiffeur in Winterthur");
+  assert.match(statusText(document), /noch nicht drüben/i);
+
+  click(publishButton(document));
+  await settle();
+  assert.equal(publishCalls.length, 2);
+  assert.equal(publishCalls[1].body.draft.salon.tagline, "Coiffeur in Winterthur", "übergeben wird der aktuelle Stand");
+  assert.doesNotMatch(statusText(document), /noch nicht drüben/i);
+  cleanup();
+});
+
+test("ein Versand aus einer früheren Sitzung überlebt den Neuladen und bleibt ehrlich", async () => {
+  const first = await readyEditor({ publishTransport: ok });
+  await submitWith({ document: first.document }, "hallo@studio-miro.ch");
+  const draft = structuredClone(first.store.snapshot);
+  const remembered = Object.fromEntries(
+    Object.keys(first.window.localStorage).map((key) => [key, first.window.localStorage.getItem(key)]),
+  );
+  first.cleanup();
+
+  const second = await bootEditor({ draft, preferences: remembered, publishTransport: ok });
+  click(second.document.querySelector('[data-panel-target="publish"]'));
+  assert.match(statusText(second.document), /Abgeschickt am/);
+  assert.match(statusText(second.document), /Falls diese Adresse verwendbar ist/);
+  assert.equal(second.store.snapshot.publication.intentId, null, "auch über den Neustart wird nichts erfunden");
+  second.cleanup();
+});
+
+test("die Mängelliste verspricht keine Exportsperre und nennt die echte Folge offener Punkte", async () => {
+  const { document, cleanup } = await readyEditor();
+  type(document.querySelector('[data-bind="salon.name"]'), "");
+  click(document.querySelector('[data-panel-target="publish"]'));
+  const summary = document.getElementById("readinessSummary").textContent;
+
+  assert.doesNotMatch(summary, /exportier/i, "der Export war nie gesperrt und ist es weiterhin nicht");
+  assert.match(summary, /wird nichts übergeben/, "was gesagt wird, wird auch durchgesetzt");
+  cleanup();
+});

@@ -156,19 +156,18 @@ export function renderPreview(context) {
  * The publish list: what is still open, worst first, and every line a jump into the field that owns
  * the problem. Nothing here decides what "open" means — that is readiness.ts.
  *
- * The summary only ever describes; it does not gate. It used to phrase readiness as a condition for
- * exporting ("Die Website kann exportiert werden") while both export buttons stayed enabled with
- * blockers on the list. Locking publication down belongs to the later publish step, so what is said
- * here is exactly what is enforced here: nothing.
+ * What is said here is exactly what is enforced. A blocker now really does hold the publish back
+ * (see publish-preflight), so the summary says so — and it no longer frames readiness as a condition
+ * for the export, which is still never refused.
  */
 export function updateReadiness(context) {
     const summary = evaluateReadiness(context.store.snapshot);
     const title = summary.ready ? summary.clean ? "Bereit, ohne offene Hinweise" : "Bereit, mit Hinweisen" : `${summary.errorCount} offene ${summary.errorCount === 1 ? "Blockierung" : "Blockierungen"}`;
     const detail = summary.ready
         ? summary.clean
-            ? "Alles Geprüfte ist beisammen. Nichts hält die spätere Veröffentlichung auf."
+            ? "Alles Geprüfte ist beisammen. Nichts hält das Veröffentlichen auf."
             : `${summary.warningCount} ${summary.warningCount === 1 ? "Hinweis hält" : "Hinweise halten"} dich nicht auf — du kannst sie bewusst stehen lassen.`
-        : "Tippe einen Punkt an, um direkt im zuständigen Feld zu landen. Exportieren kannst du trotzdem — offen bleiben die Punkte dann aber.";
+        : "Tippe einen Punkt an, um direkt im zuständigen Feld zu landen. Solange etwas offen ist, wird nichts übergeben.";
     context.readinessSummary.className = `readiness-summary ${summary.ready ? "is-ready" : "is-blocked"}${summary.clean ? " is-clean" : ""}`;
     context.readinessSummary.innerHTML = `<strong>${escapeHtml(title)}</strong><span>${escapeHtml(detail)}</span>`
         + `<div class="readiness-counts"><span>${summary.errorCount} Blocker</span><span>${summary.warningCount} Hinweise</span></div>`;
