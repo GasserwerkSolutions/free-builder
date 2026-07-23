@@ -30,6 +30,21 @@ test("staff without explicit hours normalizes to closed days", () => {
   assert.equal(normalized.staff[0].workingHours.every((day) => day.closed), true);
 });
 
+test("doppelte Personen-IDs werden wie doppelte Leistungs-IDs eindeutig gemacht", () => {
+  const draft = createDefaultDraft("2026-07-17T12:00:00.000Z");
+  const normalized = normalizeDraftV2({
+    ...draft,
+    staff: [
+      { clientId: "staff-doppelt", name: "Anna" },
+      { clientId: "staff-doppelt", name: "Bea" },
+      { clientId: "", name: "Cem" },
+    ],
+  });
+  assert.equal(normalized.staff.length, 3);
+  assert.equal(new Set(normalized.staff.map((person) => person.clientId)).size, 3);
+  assert.ok(normalized.staff.every((person) => person.clientId));
+});
+
 test("team readiness requires explicit services, hours and coverage", () => {
   const draft = createDefaultDraft("2026-07-17T12:00:00.000Z");
   draft.staff.push(createStaffDraft());

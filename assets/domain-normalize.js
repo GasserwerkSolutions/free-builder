@@ -37,6 +37,16 @@ export function validateWeeklySchedule(schedule) {
     }
     return [...new Set(errors)];
 }
+// Every editable collection needs collision-free client ids: they address items in mutations, in
+// assignments and in the undo history, so a duplicate would make "remove this one" ambiguous and let
+// the mutation verifier reject a perfectly ordinary removal. Services and staff use the same rule.
+function uniqueClientId(value, fallback, used, suffix) {
+    let clientId = asString(value, fallback) || fallback;
+    while (used.has(clientId))
+        clientId = `${clientId}-${suffix}`;
+    used.add(clientId);
+    return clientId;
+}
 export function normalizeDraftV2(input) {
     const source = asRecord(input);
     if (source.schemaVersion !== SCHEMA_VERSION)
@@ -55,10 +65,7 @@ export function normalizeDraftV2(input) {
     const usedSlugs = new Set();
     rawServices.forEach((value, index) => {
         const row = asRecord(value);
-        let clientId = asString(row.clientId, `service-${index + 1}`) || `service-${index + 1}`;
-        while (usedClientIds.has(clientId))
-            clientId = `${clientId}-${index + 1}`;
-        usedClientIds.add(clientId);
+        const clientId = uniqueClientId(row.clientId, `service-${index + 1}`, usedClientIds, index + 1);
         let slug = slugify(asString(row.slug, asString(row.name, `service-${index + 1}`)));
         let suffix = 2;
         const baseSlug = slug;
@@ -68,9 +75,10 @@ export function normalizeDraftV2(input) {
         services.push({ clientId, slug, category: asString(row.category, "Leistungen"), name: asString(row.name, "Neue Leistung"), description: asString(row.description), durationMinutes: asNumber(row.durationMinutes, 30, 5, 600), price: asNumber(row.price, 0, 0, 10000), priceType: ["fixed", "from", "on-request"].includes(row.priceType) ? row.priceType : "fixed", bookable: asBoolean(row.bookable, true) });
     });
     const serviceIds = new Set(services.map((service) => service.clientId));
+    const usedStaffClientIds = new Set();
     const staff = Array.isArray(source.staff) ? source.staff.map((value, index) => {
         const row = asRecord(value);
-        return { clientId: asString(row.clientId, `staff-${index + 1}`), name: asString(row.name, "Neue Person"), email: asString(row.email), role: asString(row.role, "Coiffeur/in"), bio: asString(row.bio), specialties: Array.isArray(row.specialties) ? row.specialties.map((item) => asString(item)).filter(Boolean).slice(0, 20) : [], active: asBoolean(row.active, true), serviceClientIds: Array.isArray(row.serviceClientIds) ? [...new Set(row.serviceClientIds.map((item) => asString(item)).filter((id) => serviceIds.has(id)))] : [], workingHours: normalizeSchedule(row.workingHours, createClosedSchedule()), portraitAssetLocalId: asString(row.portraitAssetLocalId) || null };
+        return { clientId: uniqueClientId(row.clientId, `staff-${index + 1}`, usedStaffClientIds, index + 1), name: asString(row.name, "Neue Person"), email: asString(row.email), role: asString(row.role, "Coiffeur/in"), bio: asString(row.bio), specialties: Array.isArray(row.specialties) ? row.specialties.map((item) => asString(item)).filter(Boolean).slice(0, 20) : [], active: asBoolean(row.active, true), serviceClientIds: Array.isArray(row.serviceClientIds) ? [...new Set(row.serviceClientIds.map((item) => asString(item)).filter((id) => serviceIds.has(id)))] : [], workingHours: normalizeSchedule(row.workingHours, createClosedSchedule()), portraitAssetLocalId: asString(row.portraitAssetLocalId) || null };
     }) : [];
     const assets = Array.isArray(source.assets) ? source.assets.map((value) => { const row = asRecord(value); const kind = row.kind; if (!["HERO", "PORTRAIT", "GALLERY", "LOGO"].includes(kind))
         return null; return { localId: asString(row.localId), kind, ownerClientId: asString(row.ownerClientId) || null, fileName: asString(row.fileName), mimeType: asString(row.mimeType), bytes: asNumber(row.bytes, 0, 0, Number.MAX_SAFE_INTEGER), width: row.width == null ? null : asNumber(row.width, 0, 0, 100000), height: row.height == null ? null : asNumber(row.height, 0, 0, 100000), alt: asString(row.alt), focalPoint: safeFocalPoint(row.focalPoint), uploadedAssetId: asString(row.uploadedAssetId) || null }; }).filter((item) => Boolean(item?.localId)) : [];

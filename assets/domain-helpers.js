@@ -25,6 +25,27 @@ export function normalizeHttpUrl(value) {
         return null;
     }
 }
+// Pure judgements about user input: they never rewrite the draft, they only answer whether a value
+// could be used as an address, a phone number or an Instagram profile. The draft keeps what the user
+// typed; the mutation layer uses these to report a filled-in but unusable field as "invalid".
+export function normalizeEmail(value) {
+    const email = typeof value === "string" ? value.trim() : "";
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
+}
+export function normalizePhone(value) {
+    const phone = typeof value === "string" ? value.trim() : "";
+    if (!phone)
+        return null;
+    const normalized = phone.replace(/[^\d+]/g, "").replace(/(?!^)\+/g, "");
+    return /^\+?\d{6,15}$/.test(normalized) ? normalized : null;
+}
+export function normalizeInstagramUrl(value) {
+    const normalized = normalizeHttpUrl(value);
+    if (!normalized)
+        return null;
+    const host = new URL(normalized).hostname.toLowerCase();
+    return host === "instagram.com" || host.endsWith(".instagram.com") ? normalized : null;
+}
 export function formatDuration(minutes) {
     const value = Number(minutes || 0);
     if (value < 60)
@@ -46,3 +67,24 @@ export function escapeAttr(value) { return escapeHtml(value).replace(/`/g, "&#09
 export function safeJson(value) { return JSON.stringify(value, (_key, item) => item === undefined ? undefined : item).replace(/</g, "\\u003c"); }
 export function isSafeHttpUrl(value) { return normalizeHttpUrl(value) !== null; }
 export function cloneDraft(draft) { return structuredClone(draft); }
+// Dot-path access into the draft. Shared by the input bindings and by the mutation verifier, so both
+// address a draft field the exact same way.
+export function getAtPath(object, path) {
+    return path.split(".").reduce((value, key) => value && typeof value === "object" ? value[key] : undefined, object);
+}
+export function setAtPath(object, path, value) {
+    const keys = path.split(".");
+    const last = keys.pop();
+    if (!last)
+        return;
+    let target = object;
+    for (const key of keys) {
+        const next = target[key];
+        if (!next || typeof next !== "object" || Array.isArray(next))
+            throw new Error(`INVALID_BIND_PATH:${path}`);
+        target = next;
+    }
+    if (!(last in target))
+        throw new Error(`UNKNOWN_BIND_PATH:${path}`);
+    target[last] = value;
+}

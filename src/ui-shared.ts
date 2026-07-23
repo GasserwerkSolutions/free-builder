@@ -1,22 +1,39 @@
-import { MAX_RANGES_PER_DAY, dayName, escapeAttr, escapeHtml, type ScheduleDay, type WeeklySchedule } from "./domain.js";
+import { MAX_RANGES_PER_DAY, dayName, escapeAttr, escapeHtml, type BuilderDraftV2, type ScheduleDay, type WeeklySchedule } from "./domain.js";
+import type { DraftMutation, DraftMutationDescriptor, HistoryDescriptor } from "./draft-mutations.js";
 import type { DraftRepository } from "./persistence.js";
+import type { PreviewTarget } from "./preview-contract.js";
+import type { PreviewRuntime } from "./preview-runtime.js";
 import type { BuilderStore } from "./store.js";
+
+export type MobileMode = "edit" | "preview";
 
 export type UiContext = {
   store: BuilderStore;
   repository: DraftRepository;
+  workspace: HTMLElement;
+  controlSurface: HTMLElement;
+  surfaceStage: HTMLElement;
   surfaceCard: HTMLElement;
+  sidebarToggle: HTMLButtonElement;
+  undoButton: HTMLButtonElement;
+  redoButton: HTMLButtonElement;
   previewFrame: HTMLIFrameElement;
   previewHint: HTMLElement;
   saveStatus: HTMLElement;
   serviceList: HTMLElement;
   testimonialList: HTMLElement;
   hoursList: HTMLElement;
+  readinessSummary: HTMLElement;
   readinessList: HTMLElement;
   serviceTemplate: HTMLTemplateElement;
   testimonialTemplate: HTMLTemplateElement;
-  previewTimer: ReturnType<typeof setTimeout> | null;
+  /** Owns the preview document. Null only before init() has built it. */
+  preview: PreviewRuntime | null;
   volatileStorage: boolean;
+  /** Which of the two mobile modes is showing. Meaningless above the mobile breakpoint. */
+  mobileMode: MobileMode;
+  /** Where the editing surface was scrolled when the preview took over. */
+  mobileEditorScroll: number;
 };
 
 function requiredElement<T extends Element>(id: string): T {
@@ -29,43 +46,140 @@ export function createUiContext(store: BuilderStore, repository: DraftRepository
   return {
     store,
     repository,
+    workspace: requiredElement("builder-main"),
+    controlSurface: requiredElement("controlSurface"),
+    surfaceStage: requiredElement("surfaceStage"),
     surfaceCard: requiredElement("surfaceCard"),
+    sidebarToggle: requiredElement("sidebarToggle"),
+    undoButton: requiredElement("undoButton"),
+    redoButton: requiredElement("redoButton"),
     previewFrame: requiredElement("previewFrame"),
     previewHint: requiredElement("previewHint"),
     saveStatus: requiredElement("saveStatus"),
     serviceList: requiredElement("serviceList"),
     testimonialList: requiredElement("testimonialList"),
     hoursList: requiredElement("hoursList"),
+    readinessSummary: requiredElement("readinessSummary"),
     readinessList: requiredElement("readinessList"),
     serviceTemplate: requiredElement("serviceTemplate"),
     testimonialTemplate: requiredElement("testimonialTemplate"),
-    previewTimer: null,
+    preview: null,
     volatileStorage: false,
+    mobileMode: "edit",
+    mobileEditorScroll: 0,
   };
 }
 
-export function getAtPath(object: unknown, path: string): unknown {
-  return path.split(".").reduce<unknown>((value, key) =>
-    value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined,
-  object);
+// Remembered UI preferences (sidebar, first-run hint). localStorage can be unavailable or full, and
+// a lost preference is never a reason to break the editor — so both directions swallow the failure.
+export function readPreference(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+export function writePreference(key: string, value: string): void {
+  try { localStorage.setItem(key, value); } catch { /* a preference is not worth an error */ }
 }
 
-export function setAtPath(object: object, path: string, value: unknown): void {
-  const keys = path.split(".");
-  const last = keys.pop();
-  if (!last) return;
-  let target = object as Record<string, unknown>;
-  for (const key of keys) {
-    const next = target[key];
-    if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error(`INVALID_BIND_PATH:${path}`);
-    target = next as Record<string, unknown>;
+/**
+ * Whose undo stack the caret in a text control belongs to.
+ *
+ * A jump — an undone step, an entry in the publish list, a tap in the preview — puts the focus into a
+ * field the user has not typed a single character into. That control's browser text history is
+ * therefore empty, and handing the next Ctrl/Cmd + Z to the browser would make it do nothing at all.
+ * Until a real edit lands in that very element, the history stays where the focus came from: the
+ * store. One element, remembered by identity — nothing is inferred about any other field.
+ */
+let navigatedField: HTMLElement | null = null;
+
+/** Remember the field the editor itself just focused. Null forgets the last one. */
+export function markNavigatedField(element: HTMLElement | null): void {
+  navigatedField = element;
+}
+
+/** True while this element still holds a caret the editor placed and the user has not used yet. */
+export function isNavigatedField(element: Element | null): boolean {
+  if (navigatedField && !navigatedField.isConnected) navigatedField = null;
+  return element !== null && navigatedField === element;
+}
+
+/** The first real edit in the field gives the browser its own text history back. */
+export function releaseNavigatedField(element: EventTarget | null): void {
+  if (element === navigatedField) navigatedField = null;
+}
+
+/**
+ * Make a heading focusable for exactly one visit. A jump has to be able to land on it, but a
+ * tabindex left behind would add a permanent stop to the tab order that nothing on the surface asked
+ * for — so the attribute is given back as soon as the focus leaves again.
+ */
+export function makeTransientlyFocusable(element: HTMLElement): void {
+  if (element.hasAttribute("tabindex")) return;
+  element.tabIndex = -1;
+  element.addEventListener("blur", () => element.removeAttribute("tabindex"), { once: true });
+}
+
+/** Escape a client id for use inside a CSS attribute selector, with a fallback for old engines. */
+export function cssEscape(value: string): string {
+  return typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
+}
+
+/**
+ * The polite channel for things the user should hear but not be interrupted by — the result of a
+ * click in the preview and of a reorder. Created on demand so the static page owns no dead markup.
+ */
+export function announce(context: UiContext, message: string): void {
+  void context;
+  let region = document.getElementById("previewAnnouncer");
+  if (!region) {
+    region = document.createElement("div");
+    region.id = "previewAnnouncer";
+    region.className = "visually-hidden";
+    region.setAttribute("role", "status");
+    region.setAttribute("aria-live", "polite");
+    document.body.appendChild(region);
   }
-  if (!(last in target)) throw new Error(`UNKNOWN_BIND_PATH:${path}`);
-  target[last] = value;
+  region.textContent = message;
+}
+
+/**
+ * Build a history descriptor. `key` and `target` are genuinely optional (exactOptionalPropertyTypes
+ * refuses an explicit undefined), so they are spread in only when there is something to say.
+ */
+export function historyDescriptor(label: string, options: { key?: string; target?: PreviewTarget } = {}): HistoryDescriptor {
+  return { label, ...(options.key ? { key: options.key } : {}), ...(options.target ? { target: options.target } : {}) };
 }
 
 export function inputValue(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): string | boolean {
   return input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input.value;
+}
+
+/** The one error channel of the editor: a short, plain message on the surface. */
+export function showToast(message: string): void {
+  document.querySelector(".toast")?.remove();
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.setAttribute("role", "status");
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 4200);
+}
+
+/**
+ * The single entry point every editor mutation goes through.
+ *
+ * A rejected mutation means the declared intent and the real change disagree — a bug in the editor,
+ * not a user error. Letting it escape into a DOM event handler would skip the render that follows the
+ * call and leave the surface showing something the draft never accepted. So the rejection is reported
+ * through the existing toast channel and logged with its code, the draft keeps its last verified
+ * state, and the caller carries on and re-renders from that state.
+ */
+export function safeMutate(store: BuilderStore, mutator: (draft: BuilderDraftV2) => void, descriptor: DraftMutationDescriptor): DraftMutation | null {
+  try {
+    return store.mutate(mutator, descriptor);
+  } catch (error) {
+    console.error("Draft mutation rejected.", descriptor.intent, error);
+    showToast("Diese Änderung wurde nicht übernommen. Der Entwurf bleibt auf dem zuletzt geprüften Stand.");
+    return null;
+  }
 }
 
 // The two distinct data-attribute namespaces so the salon and staff editors never share a delegator.

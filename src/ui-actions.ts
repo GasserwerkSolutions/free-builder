@@ -9,12 +9,20 @@ import {
   type DayOfWeek,
   type ThemePresetName,
 } from "./domain.js";
-import { addRange, copyDayToDays, removeRange, setDayClosed, setRangeField } from "./domain.js";
+import { addRange, copyDayToDays, removeRange, setAtPath, setDayClosed, setRangeField } from "./domain.js";
+import type { EditableFieldPath, ServiceEditableField } from "./draft-mutations.js";
 import { replaceWithFreshDraft } from "./persistence.js";
+import { isPreviewTargetShape, type PreviewTarget, type ServicePreviewField } from "./preview-contract.js";
+import { navigateToEditorTarget } from "./preview-navigation.js";
 import { buildWebsiteHtml } from "./website.js";
-import { inputValue, setAtPath, type UiContext } from "./ui-shared.js";
+import { historyDescriptor, inputValue, safeMutate, showToast, type UiContext } from "./ui-shared.js";
+import { closeSectionSheet, openSectionSheet, setMobileMode } from "./mobile-modes.js";
+import { ensureEditorOpen } from "./sidebar.js";
+import { handleReorderClick } from "./reorder-actions.js";
+import { evaluateReadiness } from "./readiness.js";
 import {
   bindStaticInputs,
+  configureReorderControls,
   renderDynamicControls,
   renderHours,
   renderHoursErrors,
@@ -24,7 +32,6 @@ import {
   renderTestimonials,
   setViewport,
   showPanel,
-  showToast,
   syncPresetInputs,
   updateReadiness,
 } from "./ui-render.js";
@@ -32,14 +39,29 @@ import {
 export function handleClick(context: UiContext, event: Event): void {
   const target = event.target;
   if (!(target instanceof Element)) return;
+  // A readiness entry is a jump, not an edit: it uses the same navigation as a click in the preview.
+  const editorTarget = target.closest<HTMLElement>("[data-editor-target]");
+  if (editorTarget) { jumpToEditorTarget(context, editorTarget.dataset.editorTarget ?? ""); return; }
+  if (target.closest("[data-sheet-open]")) { openSectionSheet(context); return; }
+  if (target.closest("[data-sheet-close]")) { closeSectionSheet(context); return; }
   const panelButton = target.closest<HTMLElement>("[data-panel-target]");
-  if (panelButton) { showPanel(context, panelButton.dataset.panelTarget ?? "salon"); return; }
+  if (panelButton) {
+    const fromSheet = Boolean(panelButton.closest("#sectionSheet"));
+    ensureEditorOpen(context);
+    showPanel(context, panelButton.dataset.panelTarget ?? "salon");
+    if (fromSheet) closeSectionSheet(context, true);
+    return;
+  }
+  const modeButton = target.closest<HTMLElement>("[data-mode]");
+  if (modeButton) { setMobileMode(context, modeButton.dataset.mode === "preview" ? "preview" : "edit"); return; }
+  if (target.closest("[data-return-preview]")) { setMobileMode(context, "preview"); return; }
   const viewportButton = target.closest<HTMLElement>("[data-viewport]");
   if (viewportButton) { setViewport(context, viewportButton.dataset.viewport ?? "desktop"); return; }
   const presetButton = target.closest<HTMLElement>("[data-preset]");
   if (presetButton) { applyPreset(context, presetButton.dataset.preset as ThemePresetName); return; }
   const hourActionButton = target.closest<HTMLElement>("[data-hour-action]");
   if (hourActionButton) { handleHourAction(context, hourActionButton); return; }
+  if (handleReorderClick(context, target)) return;
   const actionButton = target.closest<HTMLElement>("[data-action]");
   if (!actionButton) return;
   const action = actionButton.dataset.action;
@@ -47,9 +69,35 @@ export function handleClick(context: UiContext, event: Event): void {
   if (action === "remove-service") removeService(context, actionButton.closest<HTMLElement>("[data-service-card]")?.dataset.serviceId ?? "");
   if (action === "add-testimonial") addTestimonial(context);
   if (action === "remove-testimonial") removeTestimonial(context, actionButton.closest<HTMLElement>("[data-testimonial-card]")?.dataset.testimonialId ?? "");
+  if (action === "undo") stepHistory(context, "undo");
+  if (action === "redo") stepHistory(context, "redo");
   if (action === "export") exportHtml(context);
   if (action === "copy-json") void copySalonData(context);
   if (action === "reset") void resetBuilder(context);
+}
+
+/**
+ * Undo and redo through the surface.
+ *
+ * The store owns the revision; the surface has to be rebuilt from it afterwards, because a step can
+ * move anything — a field, a whole card, an order. (The team surface rebuilds itself: it subscribes
+ * to the store and treats every undo/redo as a rebuild.) Then the step says which field it was about,
+ * and the user is taken back in front of it instead of being left guessing what just changed.
+ */
+export function stepHistory(context: UiContext, direction: "undo" | "redo"): void {
+  const mutation = direction === "undo" ? context.store.undo() : context.store.redo();
+  if (!mutation) return;
+  bindStaticInputs(context);
+  renderDynamicControls(context);
+  showToast(`„${mutation.history.label}“ wurde ${direction === "undo" ? "rückgängig gemacht" : "wiederhergestellt"}.`);
+  if (mutation.history.target) navigateToEditorTarget(context, mutation.history.target);
+}
+
+function jumpToEditorTarget(context: UiContext, raw: string): void {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (isPreviewTargetShape(parsed)) navigateToEditorTarget(context, parsed);
+  } catch { /* a malformed target on our own surface is a bug, never a user error */ }
 }
 
 export function handleInput(context: UiContext, event: Event): void {
@@ -57,37 +105,43 @@ export function handleInput(context: UiContext, event: Event): void {
   if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement)) return;
   const bind = target.dataset.bind;
   if (bind) {
-    try { context.store.mutate((draft) => setAtPath(draft, bind, inputValue(target))); }
-    catch (error) { console.error(error); }
+    // The bound path is the declared scope; an unknown path or a write beyond it is rejected there.
+    safeMutate(
+      context.store,
+      (draft) => setAtPath(draft, bind, inputValue(target)),
+      { intent: { type: "set-field", field: bind as EditableFieldPath }, history: historyDescriptor(bindLabel(bind), { key: `field:${bind}`, ...fieldTarget(bind) }) },
+    );
     return;
   }
   const serviceField = target.dataset.serviceField as keyof BuilderService | undefined;
   const serviceCard = target.closest<HTMLElement>("[data-service-card]");
-  if (serviceField && serviceCard?.dataset.serviceId) {
-    context.store.mutate((draft) => {
-      const service = draft.services.find((item) => item.clientId === serviceCard.dataset.serviceId);
+  const serviceClientId = serviceCard?.dataset.serviceId;
+  if (serviceField && serviceClientId) {
+    safeMutate(context.store, (draft) => {
+      const service = draft.services.find((item) => item.clientId === serviceClientId);
       if (!service) return;
       if (serviceField === "durationMinutes" || serviceField === "price") service[serviceField] = Number(target.value || 0);
       else if (serviceField === "bookable") service.bookable = target instanceof HTMLInputElement ? target.checked : true;
       else if (serviceField === "name") { service.name = target.value; service.slug = uniqueSlug(target.value, draft.services, service.clientId); }
       else if (serviceField !== "clientId") (service[serviceField] as string) = target.value;
+    }, {
+      intent: { type: "set-service-field", serviceClientId, field: serviceField as ServiceEditableField },
+      history: historyDescriptor("Leistung bearbeitet", { key: `service:${serviceClientId}:${serviceField}`, ...serviceTarget(serviceClientId, serviceField) }),
     });
-    if (serviceField === "name") {
-      const number = serviceCard.querySelector<HTMLElement>("[data-service-number]");
-      if (number) {
-        const index = context.store.snapshot.services.findIndex((service) => service.clientId === serviceCard.dataset.serviceId);
-        number.textContent = `${index + 1}. ${target.value || "Leistung"}`;
-      }
-    }
+    if (serviceField === "name") renameServiceCard(context, serviceCard, serviceClientId, target.value);
     return;
   }
   const testimonialField = target.dataset.testimonialField as "quote" | "name" | "detail" | undefined;
-  const testimonialCard = target.closest<HTMLElement>("[data-testimonial-card]");
-  if (testimonialField && testimonialCard?.dataset.testimonialId) {
-    context.store.mutate((draft) => {
-      const item = draft.testimonials.items.find((voice) => voice.clientId === testimonialCard.dataset.testimonialId);
+  const testimonialClientId = target.closest<HTMLElement>("[data-testimonial-card]")?.dataset.testimonialId;
+  if (testimonialField && testimonialClientId) {
+    safeMutate(context.store, (draft) => {
+      const item = draft.testimonials.items.find((voice) => voice.clientId === testimonialClientId);
       if (item) item[testimonialField] = target.value;
+    }, {
+      intent: { type: "set-testimonial-field", testimonialClientId, field: testimonialField },
+      history: historyDescriptor("Kundenstimme bearbeitet", { key: `testimonial:${testimonialClientId}:${testimonialField}`, target: { kind: "testimonial", testimonialClientId, field: testimonialField } }),
     });
+    if (testimonialField === "name") renameTestimonialCard(context, target.closest<HTMLElement>("[data-testimonial-card]"), testimonialClientId, target.value);
     return;
   }
   const hourField = target.dataset.hourField as "from" | "to" | "closed" | undefined;
@@ -96,18 +150,70 @@ export function handleInput(context: UiContext, event: Event): void {
     const dayOfWeek = Number(hourRow.dataset.dayOfWeek) as DayOfWeek;
     if (hourField === "closed") {
       const closed = target instanceof HTMLInputElement ? target.checked : false;
-      context.store.mutate((draft) => { draft.businessHours = setDayClosed(draft.businessHours, dayOfWeek, closed); });
+      mutateBusinessHours(context, (draft) => { draft.businessHours = setDayClosed(draft.businessHours, dayOfWeek, closed); }, closed ? "Öffnungstag geschlossen" : "Öffnungstag geöffnet");
       renderHours(context);
     } else {
       const rangeIndex = Number(target.closest<HTMLElement>("[data-range-index]")?.dataset.rangeIndex ?? "0");
       const value = target.value;
       // No full re-render on time edits (keeps the focused input); readiness is refreshed by the
       // store subscription, and the inline error list is updated in place below.
-      context.store.mutate((draft) => { draft.businessHours = setRangeField(draft.businessHours, dayOfWeek, rangeIndex, hourField, value); });
+      mutateBusinessHours(context, (draft) => { draft.businessHours = setRangeField(draft.businessHours, dayOfWeek, rangeIndex, hourField, value); }, "Öffnungszeiten angepasst", `business-hours:${dayOfWeek}:${rangeIndex}:${hourField}`);
       hourRow.classList.remove("is-closed");
       renderHoursErrors(context);
     }
   }
+}
+
+/**
+ * A rename has to reach every place that carries the name.
+ *
+ * The visible heading of the card is the obvious one; the accessible labels of the reorder controls
+ * are the one that used to be missed. They are only built during a full render, so without this a
+ * screen reader kept announcing the previous name — "Leistung „Damenschnitt“, Position 1 von 3" on a
+ * card that visibly reads "1. Herrenschnitt kurz" — until something else rebuilt the list.
+ */
+function renameServiceCard(context: UiContext, card: HTMLElement | null | undefined, clientId: string, value: string): void {
+  const services = context.store.snapshot.services;
+  const index = services.findIndex((service) => service.clientId === clientId);
+  if (!card || index < 0) return;
+  const number = card.querySelector<HTMLElement>("[data-service-number]");
+  if (number) number.textContent = `${index + 1}. ${value || "Leistung"}`;
+  configureReorderControls(card, `Leistung „${value.trim() || "Ohne Namen"}“`, index, services.length);
+}
+
+function renameTestimonialCard(context: UiContext, card: HTMLElement | null | undefined, clientId: string, value: string): void {
+  const items = context.store.snapshot.testimonials.items;
+  const index = items.findIndex((item) => item.clientId === clientId);
+  if (!card || index < 0) return;
+  configureReorderControls(card, `Kundenstimme „${value.trim() || "Ohne Namen"}“`, index, items.length);
+}
+
+// A history step remembers which editor field it was about, so a later undo can put the user back in
+// front of it. Only a target the preview contract recognises is recorded — an unknown binding gets no
+// target rather than a made-up one.
+function fieldTarget(path: string): { target?: PreviewTarget } {
+  const target = { kind: "field", field: path } as const;
+  return isPreviewTargetShape(target) ? { target } : {};
+}
+
+const SERVICE_TARGET_FIELDS: readonly string[] = ["category", "name", "description"];
+function serviceTarget(serviceClientId: string, field: string): { target?: PreviewTarget } {
+  return SERVICE_TARGET_FIELDS.includes(field)
+    ? { target: { kind: "service", serviceClientId, field: field as ServicePreviewField } }
+    : { target: { kind: "panel", panel: "services" } };
+}
+
+function bindLabel(path: string): string {
+  if (path.startsWith("copy.")) return "Text angepasst";
+  if (path.startsWith("theme.")) return "Farbe angepasst";
+  if (path === "testimonials.enabled") return "Kundenstimmen umgeschaltet";
+  return "Salonangabe angepasst";
+}
+
+// Every opening-hours edit declares businessHours as its only scope, so a write that also touched a
+// person's working hours would be rejected instead of silently merging the two schedules.
+function mutateBusinessHours(context: UiContext, mutator: (draft: BuilderDraftV2) => void, label: string, key?: string): void {
+  safeMutate(context.store, mutator, { intent: { type: "set-business-hours" }, history: historyDescriptor(label, { ...(key ? { key } : {}), target: { kind: "panel", panel: "hours" } }) });
 }
 
 function handleHourAction(context: UiContext, button: HTMLElement): void {
@@ -116,15 +222,15 @@ function handleHourAction(context: UiContext, button: HTMLElement): void {
   const dayOfWeek = Number(dayRow.dataset.dayOfWeek) as DayOfWeek;
   const action = button.dataset.hourAction;
   if (action === "add-range") {
-    context.store.mutate((draft) => { draft.businessHours = addRange(draft.businessHours, dayOfWeek); });
+    mutateBusinessHours(context, (draft) => { draft.businessHours = addRange(draft.businessHours, dayOfWeek); }, "Zeitspanne hinzugefügt");
   } else if (action === "remove-range") {
     const rangeIndex = Number(button.dataset.rangeIndex ?? "0");
-    context.store.mutate((draft) => { draft.businessHours = removeRange(draft.businessHours, dayOfWeek, rangeIndex); });
+    mutateBusinessHours(context, (draft) => { draft.businessHours = removeRange(draft.businessHours, dayOfWeek, rangeIndex); }, "Zeitspanne entfernt");
   } else if (action === "copy-day") {
     // Bulk copy is destructive to the other days; confirm before overwriting them.
     if (!window.confirm("Diese Zeiten auf alle anderen Wochentage übernehmen? Bestehende Zeiten der anderen Tage werden dabei überschrieben.")) return;
     const targets = context.store.snapshot.businessHours.map((day) => day.dayOfWeek).filter((day) => day !== dayOfWeek);
-    context.store.mutate((draft) => { draft.businessHours = copyDayToDays(draft.businessHours, dayOfWeek, targets); });
+    mutateBusinessHours(context, (draft) => { draft.businessHours = copyDayToDays(draft.businessHours, dayOfWeek, targets); }, "Zeiten auf andere Tage übernommen");
   } else {
     return;
   }
@@ -132,19 +238,20 @@ function handleHourAction(context: UiContext, button: HTMLElement): void {
 }
 
 function addService(context: UiContext): void {
-  context.store.mutate((draft) => {
-    const clientId = createClientId("service");
+  // The id is minted outside the mutator so the intent can name the item it is about to insert.
+  const clientId = createClientId("service");
+  safeMutate(context.store, (draft) => {
     draft.services.push({ clientId, slug: uniqueSlug("Neue Leistung", draft.services), category: "Schnitt", name: "Neue Leistung", description: "", durationMinutes: 30, price: 0, priceType: "fixed", bookable: true });
-  });
+  }, { intent: { type: "insert-collection-item", collection: "services", clientId }, history: historyDescriptor("Leistung hinzugefügt", { target: { kind: "service", serviceClientId: clientId, field: "name" } }) });
   renderServices(context);
 }
 
 function removeService(context: UiContext, clientId: string): void {
   if (!clientId) return;
-  context.store.mutate((draft) => {
+  safeMutate(context.store, (draft) => {
     draft.services = draft.services.filter((service) => service.clientId !== clientId);
     draft.staff.forEach((person) => { person.serviceClientIds = person.serviceClientIds.filter((id) => id !== clientId); });
-  });
+  }, { intent: { type: "remove-collection-item", collection: "services", clientId }, history: historyDescriptor("Leistung entfernt", { target: { kind: "panel", panel: "services" } }) });
   renderServices(context);
 }
 
@@ -153,20 +260,24 @@ function addTestimonial(context: UiContext): void {
     showToast("In der Gratisversion sind maximal drei manuelle Kundenstimmen vorgesehen.");
     return;
   }
-  context.store.mutate((draft) => {
-    draft.testimonials.items.push({ clientId: createClientId("voice"), quote: "", name: "", detail: "" });
+  const clientId = createClientId("voice");
+  safeMutate(context.store, (draft) => {
+    draft.testimonials.items.push({ clientId, quote: "", name: "", detail: "" });
     draft.testimonials.enabled = true;
-  });
+  }, { intent: { type: "insert-collection-item", collection: "testimonials", clientId }, history: historyDescriptor("Kundenstimme hinzugefügt", { target: { kind: "testimonial", testimonialClientId: clientId, field: "quote" } }) });
   const toggle = document.querySelector<HTMLInputElement>('[data-bind="testimonials.enabled"]');
   if (toggle) toggle.checked = true;
   renderTestimonials(context);
 }
 
 function removeTestimonial(context: UiContext, clientId: string): void {
-  context.store.mutate((draft) => {
+  // Without an id there is nothing to remove — and the mutator would still flip the section toggle,
+  // which is a removal the intent cannot back up.
+  if (!clientId) return;
+  safeMutate(context.store, (draft) => {
     draft.testimonials.items = draft.testimonials.items.filter((item) => item.clientId !== clientId);
     if (!draft.testimonials.items.length) draft.testimonials.enabled = false;
-  });
+  }, { intent: { type: "remove-collection-item", collection: "testimonials", clientId }, history: historyDescriptor("Kundenstimme entfernt", { target: { kind: "panel", panel: "voices" } }) });
   const toggle = document.querySelector<HTMLInputElement>('[data-bind="testimonials.enabled"]');
   if (toggle) toggle.checked = context.store.snapshot.testimonials.enabled;
   renderTestimonials(context);
@@ -175,7 +286,11 @@ function removeTestimonial(context: UiContext, clientId: string): void {
 function applyPreset(context: UiContext, name: ThemePresetName): void {
   const preset = PRESETS[name];
   if (!preset) return;
-  context.store.mutate((draft) => { draft.theme.preset = name; draft.theme.primary = preset.primary; draft.theme.accent = preset.accent; });
+  safeMutate(
+    context.store,
+    (draft) => { draft.theme.preset = name; draft.theme.primary = preset.primary; draft.theme.accent = preset.accent; },
+    { intent: { type: "set-theme" }, history: historyDescriptor("Farbwelt geändert", { target: { kind: "panel", panel: "design" } }) },
+  );
   syncPresetInputs(context, name);
 }
 
@@ -190,7 +305,13 @@ function exportHtml(context: UiContext): void {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 0);
-  showToast("Die Website wurde als einzelne HTML-Datei exportiert. Die spätere SaaS-Buchung ist darin bewusst noch nicht aktiviert.");
+  // The export is never refused — the gate for that belongs to the later publish step. But it must
+  // not read like a clean bill of health either: a file exported with open blockers says so, and says
+  // where the open points are.
+  const summary = evaluateReadiness(context.store.snapshot);
+  showToast(summary.ready
+    ? "Die Website wurde als einzelne HTML-Datei exportiert. Die spätere SaaS-Buchung ist darin bewusst noch nicht aktiviert."
+    : `Die Website wurde exportiert, obwohl ${summary.errorCount} ${summary.errorCount === 1 ? "Punkt noch offen ist" : "Punkte noch offen sind"}. Unter „Veröffentlichen“ steht, was fehlt.`);
 }
 
 async function copySalonData(context: UiContext): Promise<void> {
@@ -202,7 +323,7 @@ async function resetBuilder(context: UiContext): Promise<void> {
   if (!window.confirm("Alle lokalen Änderungen und bereits gespeicherten Bilddateien zurücksetzen?")) return;
   try {
     const fresh = await replaceWithFreshDraft(context.repository, context.store.snapshot as BuilderDraftV2);
-    context.store.replace(fresh, false);
+    context.store.replace(fresh, false, "reset");
     bindStaticInputs(context);
     renderDynamicControls(context);
     renderPreview(context);

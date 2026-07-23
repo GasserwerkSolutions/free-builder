@@ -14,13 +14,17 @@
     <div class="brand"><span class="brand__mark" aria-hidden="true">G</span><div><strong>Salon Builder</strong><span>Gratis-Website für Coiffeur-Salons</span></div></div>
     <div class="topbar__actions">
       <span id="saveStatus" class="status-pill" aria-live="polite">Lokal gespeichert</span>
+      <div class="history-actions" role="group" aria-label="Änderungen">
+        <button id="undoButton" class="button button--quiet button--compact" type="button" data-action="undo" disabled title="Rückgängig (Strg oder Cmd + Z)"><span aria-hidden="true">↶</span> <span>Rückgängig</span></button>
+        <button id="redoButton" class="button button--quiet button--compact" type="button" data-action="redo" disabled title="Wiederholen (Umschalt + Strg oder Cmd + Z)"><span aria-hidden="true">↷</span> <span>Wiederholen</span></button>
+      </div>
       <button class="button button--quiet" type="button" data-action="reset">Zurücksetzen</button>
       <button class="button button--primary" type="button" data-action="export">HTML exportieren</button>
     </div>
   </header>
 
   <main id="builder-main" class="workspace">
-    <aside class="control-surface" aria-label="Website bearbeiten">
+    <aside id="controlSurface" class="control-surface" aria-label="Website bearbeiten">
       <nav class="surface-nav" aria-label="Bearbeitungsbereiche">
         <button class="surface-nav__item is-active" type="button" data-panel-target="salon">Salon</button>
         <button class="surface-nav__item" type="button" data-panel-target="copy">Texte</button>
@@ -30,8 +34,9 @@
         <button class="surface-nav__item" type="button" data-panel-target="design">Design</button>
         <button class="surface-nav__item" type="button" data-panel-target="publish">Fertig</button>
       </nav>
+      <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-controls="surfaceStage" aria-expanded="true" title="Bearbeitungsfläche einklappen"><span aria-hidden="true">‹</span><span class="visually-hidden">Bearbeitungsfläche einklappen</span></button>
 
-      <div class="surface-stage"><div id="surfaceCard" class="surface-card">
+      <div id="surfaceStage" class="surface-stage"><div id="surfaceCard" class="surface-card">
         <section class="panel is-active" data-panel="salon" aria-labelledby="panel-salon-title">
           <div class="panel__header"><p class="eyebrow">Grundlage</p><h1 id="panel-salon-title">Dein Salon</h1><p>Diese Angaben erscheinen auf der Website und bilden später die Basis für dein Buchungskonto.</p></div>
           <label class="field"><span>Salonname</span><input type="text" data-bind="salon.name" autocomplete="organization" required></label>
@@ -94,6 +99,7 @@
 
         <section class="panel" data-panel="publish" aria-labelledby="panel-publish-title" hidden>
           <div class="panel__header"><p class="eyebrow">Kontrolle</p><h2 id="panel-publish-title">Bereit für den nächsten Schritt</h2><p>Der Entwurf liegt jetzt versioniert in IndexedDB. Direkte Veröffentlichung bleibt gesperrt, bis Team, Bilder, Magic Link und SaaS-Aktivierung vollständig angebunden sind.</p></div>
+          <div id="readinessSummary" class="readiness-summary" role="status" aria-live="polite"></div>
           <div id="readinessList" class="readiness-list"></div>
           <div class="publish-actions"><button class="button button--primary button--large" type="button" data-action="export">Website als HTML exportieren</button><button class="button button--quiet" type="button" data-action="copy-json">Entwurf kopieren</button></div>
           <p class="privacy-note">Alle Textdaten liegen in einem versionierten lokalen Entwurf. localStorage enthält nur dessen Kennung; Bilddateien und Aktivierungstokens werden dort nie gespeichert.</p>
@@ -107,9 +113,25 @@
     </section>
   </main>
 
+  <!-- Below 700 px the editor and the preview take turns instead of sharing the screen. -->
+  <div class="mode-switch" role="group" aria-label="Ansicht wechseln">
+    <button class="mode-switch__return" type="button" data-return-preview hidden><span aria-hidden="true">↩</span><span>Zurück zur Vorschau</span></button>
+    <button class="mode-switch__button is-active" type="button" data-mode="edit" aria-pressed="true"><span class="mode-switch__check" aria-hidden="true">✓</span><span>Bearbeiten</span></button>
+    <button class="mode-switch__button mode-switch__button--sections" type="button" data-sheet-open aria-haspopup="dialog" aria-expanded="false"><span aria-hidden="true">☰</span><span>Bereiche</span></button>
+    <button class="mode-switch__button" type="button" data-mode="preview" aria-pressed="false"><span class="mode-switch__check" aria-hidden="true">✓</span><span>Vorschau</span></button>
+  </div>
+
+  <div id="sectionSheet" class="section-sheet" hidden>
+    <div class="section-sheet__backdrop" data-sheet-close></div>
+    <div class="section-sheet__card" role="dialog" aria-modal="true" aria-labelledby="sectionSheetTitle">
+      <div class="section-sheet__head"><h2 id="sectionSheetTitle">Bereiche</h2><button class="icon-button" type="button" data-sheet-close aria-label="Bereiche schliessen">×</button></div>
+      <div id="sectionSheetList" class="section-sheet__list"></div>
+    </div>
+  </div>
+
   <template id="serviceTemplate">
     <article class="item-card" data-service-card>
-      <div class="item-card__topline"><span class="drag-dot" aria-hidden="true">•••</span><strong data-service-number>Leistung</strong><button class="icon-button" type="button" data-action="remove-service" aria-label="Leistung entfernen">×</button></div>
+      <div class="item-card__topline"><strong data-service-number>Leistung</strong><button class="icon-button" type="button" data-action="remove-service" aria-label="Leistung entfernen">×</button></div>
       <div class="field-grid"><label class="field"><span>Kategorie</span><input type="text" data-service-field="category" placeholder="Schnitt"></label><label class="field"><span>Name</span><input type="text" data-service-field="name" placeholder="Damenschnitt"></label></div>
       <label class="field"><span>Kurzbeschreibung</span><input type="text" data-service-field="description" placeholder="Was ist enthalten?"></label>
       <div class="field-grid field-grid--three">
