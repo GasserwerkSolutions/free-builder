@@ -99,6 +99,8 @@ button { color: inherit; }
 .button--primary { border-color: var(--accent); background: var(--accent); color: white; }
 .button--primary:hover { border-color: var(--accent-dark); background: var(--accent-dark); }
 .button--quiet { background: transparent; }
+/* showPanel marks the open panel on every [data-panel-target]; the topbar button is one of them. */
+.button.is-active { border-color: var(--accent-dark); box-shadow: inset 0 0 0 2px rgba(255, 255, 255, .45); }
 .button--large { width: 100%; min-height: 50px; }
 .button--compact { min-height: 38px; padding: 7px 10px; }
 .button:disabled { opacity: .45; cursor: default; transform: none; box-shadow: none; }
@@ -374,6 +376,28 @@ button { color: inherit; }
 .readiness-empty span { color: var(--muted); font-size: 12px; }
 .publish-actions { display: grid; gap: 8px; }
 .privacy-note { margin-top: 18px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+/* Publish form: the closing action of the builder. The status region carries the whole truth about
+   the last attempt, so it is the tallest thing here — never a one-word badge. */
+.publish-form { display: grid; gap: 12px; margin-top: 6px; padding: 16px; border: 1px solid var(--line); border-radius: 15px; background: var(--paper); }
+.publish-form__note { margin: -4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.publish-status { display: grid; gap: 7px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 13px; background: rgba(64, 59, 52, .035); }
+.publish-status > strong { font-size: 14px; line-height: 1.3; }
+.publish-status > span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.publish-status.is-blocked, .publish-status.is-failed { border-color: rgba(158, 60, 60, .3); background: rgba(255, 248, 248, .82); }
+.publish-status.is-submitted { border-color: rgba(47, 111, 78, .3); background: rgba(248, 255, 251, .85); }
+.publish-status.is-checking, .publish-status.is-sending { border-color: rgba(180, 132, 52, .32); background: rgba(255, 253, 246, .85); }
+.publish-status__list { margin: 0; padding-left: 18px; display: grid; gap: 6px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.publish-status__warn { padding-top: 7px; border-top: 1px solid rgba(158, 60, 60, .2); }
+.publish-status__technical { color: var(--muted); font-size: 11px; opacity: .8; word-break: break-word; }
+.publish-assets { display: grid; gap: 4px; margin-top: 14px; padding: 13px 14px; border: 1px dashed var(--line); border-radius: 13px; }
+.publish-assets span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+/* The export stays reachable, one click away — but it no longer explains what the product is for. */
+.publish-fallback { margin-top: 16px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 13px; background: rgba(64, 59, 52, .025); }
+.publish-fallback > summary { cursor: pointer; font-size: 13px; font-weight: 700; }
+.publish-fallback > summary:focus-visible { outline: 3px solid rgba(124, 92, 77, .28); outline-offset: 2px; }
+.publish-fallback p { margin: 10px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.publish-actions--quiet { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
 
 .preview-area { min-width: 0; display: flex; flex-direction: column; background: #d9d5ce; }
 .preview-toolbar {

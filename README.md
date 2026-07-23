@@ -33,16 +33,17 @@ Enthalten:
 - optional bis zu drei manuelle Kundenstimmen
 - lokales Autosave in IndexedDB
 - responsive Live-Vorschau
-- Export als einzelne HTML-Datei
-- sichere Migration bestehender V1-Entwürfe
+- Publish-Oberfläche: E-Mail-Eingabe, Vorprüfung, Übergabe des Entwurfs an den SaaS-Publish-Intent
+- Export als einzelne HTML-Datei — als Sicherung, nicht als Abschluss
 
 Bewusst noch nicht als produktiv fertig bezeichnet:
 
 - lokale Bildauswahl und Upload
 - Magic-Link-Aktivierung
 - Tenant-/CMS-/Booking-Synchronisierung
-- direkte Veröffentlichung
 - externe Bewertungs-APIs
+
+Der Publish-Knopf übergibt den Entwurf und löst eine Nachricht aus; er veröffentlicht selbst noch keine Website. Die Antwort des Endpunkts ist aus Sicherheitsgründen konstant und sagt weder, ob ein Konto besteht, noch ob eine E-Mail zugestellt wurde — die Oberfläche behauptet entsprechend nichts davon. Der übergebene Entwurf ist eine Kopie: spätere Änderungen im Builder erreichen den SaaS erst durch ein erneutes Senden.
 
 Buchungs- und Bild-URLs aus V1 werden nicht als neue Datenwahrheit übernommen. Eine frühere Titelbild-URL wird nur als sichtbarer Migrationshinweis bewahrt; die Datei muss später bewusst neu ausgewählt werden.
 

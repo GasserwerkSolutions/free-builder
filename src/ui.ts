@@ -4,6 +4,7 @@ import { navigateToEditorTarget } from "./preview-navigation.js";
 import { PreviewRuntime, type PreviewStatus } from "./preview-runtime.js";
 import { cancelActiveDrag, handleReorderKeydown, handleReorderPointerDown, handleReorderPointerEnd, handleReorderPointerLost, handleReorderPointerMove } from "./reorder-actions.js";
 import { initSidebar } from "./sidebar.js";
+import { installPublishUi, type PublishUiOptions } from "./publish-ui.js";
 import type { BuilderStore, HistoryState } from "./store.js";
 import { handleClick, handleInput, stepHistory } from "./ui-actions.js";
 import {
@@ -59,6 +60,7 @@ export class BuilderUi {
   private unsubscribeHistory: (() => void) | null = null;
   private teardownSidebar: (() => void) | null = null;
   private teardownMobile: (() => void) | null = null;
+  private teardownPublish: (() => void) | null = null;
 
   constructor(store: BuilderStore, repository: DraftRepository) {
     this.context = createUiContext(store, repository);
@@ -67,10 +69,14 @@ export class BuilderUi {
   /** The live preview, once init() has built it. Read-only access for tests and diagnostics. */
   get previewRuntime(): PreviewRuntime | null { return this.context.preview; }
 
-  init(options: DraftLoadResult & { volatileStorage?: boolean }): void {
+  init(options: DraftLoadResult & { volatileStorage?: boolean; publish?: PublishUiOptions }): void {
     this.context.volatileStorage = Boolean(options.volatileStorage);
     this.teardownSidebar = initSidebar(this.context);
     this.teardownMobile = initMobileModes(this.context);
+    // The publish surface is part of the editor, not an add-on: the closing action has to exist
+    // wherever the editor exists. Its transport is injectable so a test never reaches the real
+    // endpoint — the default is the relative, same-origin call.
+    this.teardownPublish = installPublishUi(this.context, options.publish ?? {});
     bindStaticInputs(this.context);
     renderDynamicControls(this.context);
     const preview = new PreviewRuntime({
@@ -149,6 +155,8 @@ export class BuilderUi {
     this.teardownSidebar = null;
     this.teardownMobile?.();
     this.teardownMobile = null;
+    this.teardownPublish?.();
+    this.teardownPublish = null;
     this.context.preview?.destroy();
     this.context.preview = null;
     document.getElementById("previewAnnouncer")?.remove();

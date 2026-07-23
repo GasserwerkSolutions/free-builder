@@ -39,6 +39,7 @@ const HISTORY_LIMIT = 60;
 export class BuilderStore {
   private draft: BuilderDraftV2;
   private revisionValue = 0;
+  private generationValue = 0;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private listeners = new Set<StoreListener>();
   private saveListeners = new Set<SaveListener>();
@@ -58,6 +59,15 @@ export class BuilderStore {
   get snapshot(): Readonly<BuilderDraftV2> { return this.draft; }
   /** Monotonic counter over accepted state changes. Never decreases, not even on undo. */
   get revision(): number { return this.revisionValue; }
+  /**
+   * Monotonic counter over authoritative replacements (import, reset, recovery).
+   *
+   * The revision alone cannot see those: replacing the draft with content that happens to be equal
+   * leaves the revision where it is, yet the draft object, its identity and its history are new. A
+   * long-running operation that only watched the revision would carry on against a draft that no
+   * longer exists — so anything that has to survive an await watches both counters.
+   */
+  get generation(): number { return this.generationValue; }
   get canUndo(): boolean { return this.undoStack.length > 0; }
   get canRedo(): boolean { return this.redoStack.length > 0; }
   get nextUndoAction(): HistoryDescriptor | null { return this.undoStack.at(-1)?.history ?? null; }
@@ -90,6 +100,7 @@ export class BuilderStore {
   replace(next: BuilderDraftV2, persist = true, reason: ReplaceReason = "recovery"): DraftMutation | null {
     const before = cloneDraft(this.draft);
     const normalized = normalizeDraftV2(next);
+    this.generationValue += 1;
     this.clearHistory();
     this.cancelPendingSaves();
     const history: HistoryDescriptor = { label: REPLACE_LABELS[reason] };
