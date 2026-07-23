@@ -1,0 +1,25 @@
+# Normalize every text file to LF — in the repository and on every checkout,
+# on every machine, regardless of the local core.autocrlf setting.
+# Path attributes take precedence over core.autocrlf, so `eol=lf` guarantees an
+# LF working tree even on a fresh Windows checkout with core.autocrlf=true. This
+# keeps the byte-exact export gate (tests/export-contract.test.mjs) stable, because
+# the HTML generator inherits its line endings from its LF template literals.
+* text=auto eol=lf
+
+# Real binaries must never pass through the text/EOL filters. None are tracked
+# today, but these rules keep any future asset byte-exact the moment it is added.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.avif  binary
+*.ico   binary
+*.icns  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.eot   binary
+*.pdf   binary
+*.zip   binary
