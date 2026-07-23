@@ -1,4 +1,5 @@
-import { MAX_RANGES_PER_DAY, dayName, escapeAttr, escapeHtml, type ScheduleDay, type WeeklySchedule } from "./domain.js";
+import { MAX_RANGES_PER_DAY, dayName, escapeAttr, escapeHtml, type BuilderDraftV2, type ScheduleDay, type WeeklySchedule } from "./domain.js";
+import type { DraftMutation, DraftMutationDescriptor } from "./draft-mutations.js";
 import type { DraftRepository } from "./persistence.js";
 import type { BuilderStore } from "./store.js";
 
@@ -46,6 +47,36 @@ export function createUiContext(store: BuilderStore, repository: DraftRepository
 
 export function inputValue(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): string | boolean {
   return input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input.value;
+}
+
+/** The one error channel of the editor: a short, plain message on the surface. */
+export function showToast(message: string): void {
+  document.querySelector(".toast")?.remove();
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.setAttribute("role", "status");
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 4200);
+}
+
+/**
+ * The single entry point every editor mutation goes through.
+ *
+ * A rejected mutation means the declared intent and the real change disagree — a bug in the editor,
+ * not a user error. Letting it escape into a DOM event handler would skip the render that follows the
+ * call and leave the surface showing something the draft never accepted. So the rejection is reported
+ * through the existing toast channel and logged with its code, the draft keeps its last verified
+ * state, and the caller carries on and re-renders from that state.
+ */
+export function safeMutate(store: BuilderStore, mutator: (draft: BuilderDraftV2) => void, descriptor: DraftMutationDescriptor): DraftMutation | null {
+  try {
+    return store.mutate(mutator, descriptor);
+  } catch (error) {
+    console.error("Draft mutation rejected.", descriptor.intent, error);
+    showToast("Diese Änderung wurde nicht übernommen. Der Entwurf bleibt auf dem zuletzt geprüften Stand.");
+    return null;
+  }
 }
 
 // The two distinct data-attribute namespaces so the salon and staff editors never share a delegator.

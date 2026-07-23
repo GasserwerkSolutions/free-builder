@@ -108,14 +108,20 @@ test("Reload-Trennungs-Gate: Öffnungszeiten und persönliche Arbeitszeiten blei
   const store = new BuilderStore(base, repository, 1);
 
   // Erst persönliche Zeiten von den Öffnungszeiten ableiten (Dienstag: eine Spanne 09:00–18:00).
-  store.mutate((draft) => { copyBusinessHoursToStaff(draft, staffId, { overwrite: true }); });
+  store.mutate(
+    (draft) => { copyBusinessHoursToStaff(draft, staffId, { overwrite: true }); },
+    { intent: { type: "set-staff-hours", staffClientId: staffId }, history: { label: "Öffnungszeiten als Arbeitszeiten übernommen" } },
+  );
   // Öffnungszeiten Dienstag um eine zweite Spanne ergänzen.
-  store.mutate((draft) => { draft.businessHours = addRange(draft.businessHours, 2); });
+  store.mutate(
+    (draft) => { draft.businessHours = addRange(draft.businessHours, 2); },
+    { intent: { type: "set-business-hours" }, history: { label: "Zeitspanne hinzugefügt" } },
+  );
   // Persönliche Zeiten Dienstag getrennt anpassen (Beginn der ersten Spanne).
   store.mutate((draft) => {
     const person = draft.staff.find((item) => item.clientId === staffId);
     person.workingHours = setRangeField(person.workingHours, 2, 0, "from", "07:30");
-  });
+  }, { intent: { type: "set-staff-hours", staffClientId: staffId }, history: { label: "Arbeitszeiten angepasst" } });
   await store.flush();
 
   const reloaded = await repository.getDraft(base.draftId);

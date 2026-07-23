@@ -2,8 +2,8 @@ import { MAX_TESTIMONIALS, PRESETS, createClientId, slugify, uniqueSlug, } from 
 import { addRange, copyDayToDays, removeRange, setAtPath, setDayClosed, setRangeField } from "./domain.js";
 import { replaceWithFreshDraft } from "./persistence.js";
 import { buildWebsiteHtml } from "./website.js";
-import { inputValue } from "./ui-shared.js";
-import { bindStaticInputs, renderDynamicControls, renderHours, renderHoursErrors, renderPreview, renderServices, renderTestimonials, setViewport, showPanel, showToast, syncPresetInputs, updateReadiness, } from "./ui-render.js";
+import { inputValue, safeMutate, showToast } from "./ui-shared.js";
+import { bindStaticInputs, renderDynamicControls, renderHours, renderHoursErrors, renderPreview, renderServices, renderTestimonials, setViewport, showPanel, syncPresetInputs, updateReadiness, } from "./ui-render.js";
 export function handleClick(context, event) {
     const target = event.target;
     if (!(target instanceof Element))
@@ -53,20 +53,15 @@ export function handleInput(context, event) {
         return;
     const bind = target.dataset.bind;
     if (bind) {
-        // The bound path is the declared scope; an unknown path or a write beyond it throws here.
-        try {
-            context.store.mutate((draft) => setAtPath(draft, bind, inputValue(target)), { intent: { type: "set-field", field: bind }, history: { key: `field:${bind}`, label: bindLabel(bind) } });
-        }
-        catch (error) {
-            console.error(error);
-        }
+        // The bound path is the declared scope; an unknown path or a write beyond it is rejected there.
+        safeMutate(context.store, (draft) => setAtPath(draft, bind, inputValue(target)), { intent: { type: "set-field", field: bind }, history: { key: `field:${bind}`, label: bindLabel(bind) } });
         return;
     }
     const serviceField = target.dataset.serviceField;
     const serviceCard = target.closest("[data-service-card]");
     const serviceClientId = serviceCard?.dataset.serviceId;
     if (serviceField && serviceClientId) {
-        context.store.mutate((draft) => {
+        safeMutate(context.store, (draft) => {
             const service = draft.services.find((item) => item.clientId === serviceClientId);
             if (!service)
                 return;
@@ -96,7 +91,7 @@ export function handleInput(context, event) {
     const testimonialField = target.dataset.testimonialField;
     const testimonialClientId = target.closest("[data-testimonial-card]")?.dataset.testimonialId;
     if (testimonialField && testimonialClientId) {
-        context.store.mutate((draft) => {
+        safeMutate(context.store, (draft) => {
             const item = draft.testimonials.items.find((voice) => voice.clientId === testimonialClientId);
             if (item)
                 item[testimonialField] = target.value;
@@ -138,7 +133,7 @@ function bindLabel(path) {
 // Every opening-hours edit declares businessHours as its only scope, so a write that also touched a
 // person's working hours would be rejected instead of silently merging the two schedules.
 function mutateBusinessHours(context, mutator, label, key) {
-    context.store.mutate(mutator, { intent: { type: "set-business-hours" }, history: key ? { key, label } : { label } });
+    safeMutate(context.store, mutator, { intent: { type: "set-business-hours" }, history: key ? { key, label } : { label } });
 }
 function handleHourAction(context, button) {
     const dayRow = button.closest("[data-day-of-week]");
@@ -168,7 +163,7 @@ function handleHourAction(context, button) {
 function addService(context) {
     // The id is minted outside the mutator so the intent can name the item it is about to insert.
     const clientId = createClientId("service");
-    context.store.mutate((draft) => {
+    safeMutate(context.store, (draft) => {
         draft.services.push({ clientId, slug: uniqueSlug("Neue Leistung", draft.services), category: "Schnitt", name: "Neue Leistung", description: "", durationMinutes: 30, price: 0, priceType: "fixed", bookable: true });
     }, { intent: { type: "insert-collection-item", collection: "services", clientId }, history: { label: "Leistung hinzugefügt" } });
     renderServices(context);
@@ -176,7 +171,7 @@ function addService(context) {
 function removeService(context, clientId) {
     if (!clientId)
         return;
-    context.store.mutate((draft) => {
+    safeMutate(context.store, (draft) => {
         draft.services = draft.services.filter((service) => service.clientId !== clientId);
         draft.staff.forEach((person) => { person.serviceClientIds = person.serviceClientIds.filter((id) => id !== clientId); });
     }, { intent: { type: "remove-collection-item", collection: "services", clientId }, history: { label: "Leistung entfernt" } });
@@ -188,7 +183,7 @@ function addTestimonial(context) {
         return;
     }
     const clientId = createClientId("voice");
-    context.store.mutate((draft) => {
+    safeMutate(context.store, (draft) => {
         draft.testimonials.items.push({ clientId, quote: "", name: "", detail: "" });
         draft.testimonials.enabled = true;
     }, { intent: { type: "insert-collection-item", collection: "testimonials", clientId }, history: { label: "Kundenstimme hinzugefügt" } });
@@ -198,7 +193,11 @@ function addTestimonial(context) {
     renderTestimonials(context);
 }
 function removeTestimonial(context, clientId) {
-    context.store.mutate((draft) => {
+    // Without an id there is nothing to remove — and the mutator would still flip the section toggle,
+    // which is a removal the intent cannot back up.
+    if (!clientId)
+        return;
+    safeMutate(context.store, (draft) => {
         draft.testimonials.items = draft.testimonials.items.filter((item) => item.clientId !== clientId);
         if (!draft.testimonials.items.length)
             draft.testimonials.enabled = false;
@@ -212,7 +211,7 @@ function applyPreset(context, name) {
     const preset = PRESETS[name];
     if (!preset)
         return;
-    context.store.mutate((draft) => { draft.theme.preset = name; draft.theme.primary = preset.primary; draft.theme.accent = preset.accent; }, { intent: { type: "set-theme" }, history: { label: "Farbwelt geändert" } });
+    safeMutate(context.store, (draft) => { draft.theme.preset = name; draft.theme.primary = preset.primary; draft.theme.accent = preset.accent; }, { intent: { type: "set-theme" }, history: { label: "Farbwelt geändert" } });
     syncPresetInputs(context, name);
 }
 function exportHtml(context) {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PRESETS, createDefaultDraft } from "../assets/domain.js";
+import { PRESETS, createDefaultDraft, uniqueSlug } from "../assets/domain.js";
 import { MemoryDraftRepository } from "../assets/persistence.js";
 import { BuilderStore } from "../assets/store.js";
 
@@ -9,7 +9,10 @@ test("serializes debounced writes and persists immutable client ids", async () =
   const draft = createDefaultDraft("2026-07-17T12:00:00.000Z");
   const clientId = draft.services[0].clientId;
   const store = new BuilderStore(draft, repository, 1);
-  store.mutate((next) => { next.services[0].name = "Neuer Name"; next.services[0].slug = "neuer-name"; });
+  store.mutate(
+    (next) => { next.services[0].name = "Neuer Name"; next.services[0].slug = "neuer-name"; },
+    { intent: { type: "set-service-field", serviceClientId: clientId, field: "name" }, history: { label: "Leistung bearbeitet" } },
+  );
   await store.flush();
   const saved = await repository.getDraft(draft.draftId);
   assert.equal(saved.services[0].clientId, clientId);
@@ -26,10 +29,10 @@ test("flush surfaces durability failures and later saves can recover", async () 
     await originalPut(value);
   };
   const store = new BuilderStore(draft, repository, 1000);
-  store.mutate((next) => { next.salon.name = "Erster Versuch"; });
+  store.mutate((next) => { next.salon.name = "Erster Versuch"; }, fieldDescriptor("salon.name"));
   await assert.rejects(() => store.flush(), /quota/);
   fail = false;
-  store.mutate((next) => { next.salon.name = "Zweiter Versuch"; });
+  store.mutate((next) => { next.salon.name = "Zweiter Versuch"; }, fieldDescriptor("salon.name"));
   await store.flush();
   assert.equal((await repository.getDraft(draft.draftId)).salon.name, "Zweiter Versuch");
 });
@@ -37,6 +40,28 @@ test("flush surfaces durability failures and later saves can recover", async () 
 const FIXED_NOW = "2026-07-17T12:00:00.000Z";
 const fieldDescriptor = (field, label = "Feld geändert") => ({ intent: { type: "set-field", field }, history: { key: `field:${field}`, label } });
 const newStore = (draft = createDefaultDraft(FIXED_NOW), repository = new MemoryDraftRepository()) => new BuilderStore(draft, repository, 1000);
+
+// Die drei Helfer bilden exakt die Editor-Mutationen aus ui-actions nach: Einfügen mit abgeleitetem
+// Slug und Umbenennen, das den Slug neu ableitet — inklusive Gruppierungsschlüssel.
+const serviceNameDescriptor = (serviceClientId) => ({
+  intent: { type: "set-service-field", serviceClientId, field: "name" },
+  history: { key: `service:${serviceClientId}:name`, label: "Leistung bearbeitet" },
+});
+function addService(store, name, clientId) {
+  store.mutate((draft) => {
+    draft.services.push({ clientId, slug: uniqueSlug(name, draft.services), category: "Schnitt", name, description: "", durationMinutes: 30, price: 0, priceType: "fixed", bookable: true });
+  }, { intent: { type: "insert-collection-item", collection: "services", clientId }, history: { label: "Leistung hinzugefügt" } });
+  return clientId;
+}
+function renameService(store, clientId, name) {
+  return store.mutate((draft) => {
+    const service = draft.services.find((item) => item.clientId === clientId);
+    if (!service) return;
+    service.name = name;
+    service.slug = uniqueSlug(name, draft.services, service.clientId);
+  }, serviceNameDescriptor(clientId));
+}
+const serviceOf = (store, clientId) => store.snapshot.services.find((service) => service.clientId === clientId);
 
 test("die Revision steigt nur bei angenommenen Zustandsänderungen", () => {
   const store = newStore();
@@ -226,4 +251,110 @@ test("Abonnenten erhalten weiterhin den Entwurf als erstes Argument", () => {
   store.subscribe((draft, mutation) => seen.push([draft.salon.name, mutation.revision, mutation.effect.type]));
   store.mutate((next) => { next.salon.name = "Studio Neu"; }, fieldDescriptor("salon.name"));
   assert.deepEqual(seen, [["Studio Neu", 1, "field-set"]]);
+});
+
+test("gruppierte Umbenennungen einer Leistung ergeben einen einzigen Undo-Schritt", () => {
+  const store = newStore();
+  const clientId = "service-damenschnitt";
+  renameService(store, clientId, "D");
+  renameService(store, clientId, "Da");
+  renameService(store, clientId, "Dam");
+  assert.equal(store.revision, 3);
+  assert.equal(serviceOf(store, clientId).slug, "dam");
+  store.undo();
+  assert.equal(serviceOf(store, clientId).name, "Damenschnitt");
+  assert.equal(serviceOf(store, clientId).slug, "damenschnitt");
+  assert.equal(store.canUndo, false);
+});
+
+test("ein im Gruppierungsfenster frei gewordener Slug bricht die Umbenennung nicht ab", () => {
+  const store = newStore();
+  const first = addService(store, "Neue Leistung", "service-eins");
+  const second = addService(store, "Neue Leistung", "service-zwei");
+  addService(store, "Neue Leistung", "service-drei");
+  assert.equal(serviceOf(store, second).slug, "neue-leistung-2");
+  // Die erste Leistung gibt den Basis-Slug frei.
+  renameService(store, first, "Waschen");
+  store.flushHistoryGroup();
+  // Zwei gruppierte Tastendrücke in der zweiten Leistung: ein Zeichen tippen und wieder löschen.
+  // Der Name ist danach netto unverändert, der frei gewordene Basis-Slug rückt aber nach.
+  renameService(store, second, "Neue LeistungX");
+  assert.doesNotThrow(() => renameService(store, second, "Neue Leistung"));
+  assert.equal(serviceOf(store, second).name, "Neue Leistung");
+  assert.equal(serviceOf(store, second).slug, "neue-leistung");
+  store.undo();
+  assert.equal(serviceOf(store, second).name, "Neue Leistung");
+  assert.equal(serviceOf(store, second).slug, "neue-leistung-2");
+});
+
+test("ein Schreibvorgang mit unverändertem Wert erzeugt weder Mutation noch Wurf", () => {
+  const store = newStore();
+  const clientId = "service-damenschnitt";
+  renameService(store, clientId, "Damenschnitt Neu");
+  // Das change-Ereignis nach dem input-Ereignis schreibt denselben Wert ein zweites Mal.
+  assert.equal(renameService(store, clientId, "Damenschnitt Neu"), null);
+  assert.equal(store.revision, 1);
+  assert.equal(serviceOf(store, clientId).slug, "damenschnitt-neu");
+});
+
+test("ohne Descriptor läuft keine unverifizierte Mutation durch", () => {
+  const store = newStore();
+  assert.throws(() => store.mutate((next) => { next.salon.name = "Ohne Absicht"; }));
+  assert.equal(store.revision, 0);
+  assert.equal(store.snapshot.salon.name, "Studio Miro");
+});
+
+test("ein Wurf im Gruppierungszweig schiebt das Gruppierungsfenster trotzdem weiter", () => {
+  const store = newStore();
+  const descriptor = fieldDescriptor("salon.tagline", "Leitsatz geändert");
+  const realNow = Date.now;
+  try {
+    Date.now = () => 1000;
+    store.mutate((next) => { next.salon.tagline = "A"; }, descriptor);
+    // Erzwingt den Fehlerfall im Gruppierungszweig: der Gruppen-Datensatz fehlt. Der Zugriff auf die
+    // interne Historie ist hier Absicht — das Gruppierungsfenster ist von aussen nicht beobachtbar.
+    store.undoStack.length = 0;
+    Date.now = () => 1500;
+    assert.throws(() => store.mutate((next) => { next.salon.tagline = "Ab"; }, descriptor), /MISSING_GROUPED_HISTORY_RECORD/);
+    assert.equal(store.lastHistoryAt, 1500);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("eine Speicherung, die während des Schreibens ungültig wird, meldet sich nicht als gespeichert", async () => {
+  const repository = new MemoryDraftRepository();
+  const draft = createDefaultDraft(FIXED_NOW);
+  let release = () => {};
+  const gate = new Promise((resolve) => { release = resolve; });
+  const originalPut = repository.putDraft.bind(repository);
+  let blockFirst = true;
+  repository.putDraft = async (value) => {
+    if (blockFirst) { blockFirst = false; await gate; }
+    await originalPut(value);
+  };
+  const store = newStore(draft, repository);
+  const states = [];
+  store.subscribeSave((state) => states.push(state));
+  store.mutate((next) => { next.salon.name = "Vor dem Zurücksetzen"; }, fieldDescriptor("salon.name"));
+  const pending = store.flush();
+  // Die Speicherung hängt jetzt im Repository fest; das Zurücksetzen entwertet sie mittendrin.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const fresh = createDefaultDraft(FIXED_NOW);
+  fresh.draftId = draft.draftId;
+  store.replace(fresh, false, "reset");
+  release();
+  await pending;
+  assert.equal(states.filter((state) => state === "saved").length, 1);
+});
+
+test("eine inhaltsgleiche Ersetzung benachrichtigt auch die Entwurfs-Abonnenten", () => {
+  const draft = createDefaultDraft(FIXED_NOW);
+  const store = newStore(draft);
+  const seen = [];
+  store.subscribe((next, mutation) => seen.push([next.salon.name, mutation.effect.type, mutation.revision]));
+  const same = createDefaultDraft(FIXED_NOW);
+  same.draftId = draft.draftId;
+  assert.equal(store.replace(same, false, "recovery"), null);
+  assert.deepEqual(seen, [["Studio Miro", "draft-replace", 0]]);
 });

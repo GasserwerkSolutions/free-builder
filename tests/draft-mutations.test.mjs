@@ -67,6 +67,26 @@ test("das Umbenennen einer Leistung darf den Slug mitziehen, aber nichts anderes
   assert.throws(() => createDraftEffect(before, after, { type: "set-service-field", serviceClientId: "service-damenschnitt", field: "name" }), /UNEXPECTED_SERVICE_FIELD_CHANGE/);
 });
 
+test("eine Umbenennung, die nur den abgeleiteten Slug nachzieht, bleibt gültig", () => {
+  const before = baseDraft();
+  const after = structuredClone(before);
+  // Ein frei gewordener Basis-Slug rückt nach, der Name bleibt netto unverändert.
+  after.services[0].slug = "damenschnitt-frei";
+  assert.deepEqual(createDraftEffect(before, after, { type: "set-service-field", serviceClientId: "service-damenschnitt", field: "name" }), {
+    type: "service-field-set", serviceClientId: "service-damenschnitt", field: "name", previousPresence: "present", nextPresence: "present",
+  });
+  // Fremdes läuft weiterhin nicht mit.
+  after.services[0].description = "Heimlich geändert";
+  assert.throws(() => createDraftEffect(before, after, { type: "set-service-field", serviceClientId: "service-damenschnitt", field: "name" }), /UNEXPECTED_SERVICE_FIELD_CHANGE/);
+});
+
+test("eine Absicht ohne abgeleitetes Feld verlangt weiterhin eine Änderung genau dieses Feldes", () => {
+  const before = baseDraft();
+  const after = structuredClone(before);
+  after.services[0].slug = "damenschnitt-frei";
+  assert.throws(() => createDraftEffect(before, after, { type: "set-service-field", serviceClientId: "service-damenschnitt", field: "price" }), /INVALID_SERVICE_FIELD_SET/);
+});
+
 test("eine Preisänderung darf den Slug nicht mitverändern", () => {
   const before = baseDraft();
   const after = structuredClone(before);
@@ -169,6 +189,40 @@ test("eine unbeschriebene Sammel-Mutation bleibt als unverifiziert gekennzeichne
   assert.deepEqual(createDraftEffect(before, after, { type: "batch" }), { type: "unverified-batch" });
   assert.equal(requiresSnapshotInversion({ type: "unverified-batch" }), false);
   assert.deepEqual(invertDraftEffect({ type: "unverified-batch" }), { type: "unverified-batch" });
+});
+
+test("eine unbrauchbare Kontaktangabe wird als invalid gemeldet, nicht als present", () => {
+  const before = baseDraft();
+  const after = structuredClone(before);
+  after.salon.email = "das-ist-keine-mail";
+  assert.deepEqual(createDraftEffect(before, after, { type: "set-field", field: "salon.email" }), {
+    type: "field-set", field: "salon.email", previousPresence: "present", nextPresence: "invalid",
+  });
+  const phoneAfter = structuredClone(before);
+  phoneAfter.salon.phone = "ruf mich an";
+  assert.equal(createDraftEffect(before, phoneAfter, { type: "set-field", field: "salon.phone" }).nextPresence, "invalid");
+  const instagramAfter = structuredClone(before);
+  instagramAfter.salon.instagram = "https://example.ch/kein-profil";
+  assert.equal(createDraftEffect(before, instagramAfter, { type: "set-field", field: "salon.instagram" }).nextPresence, "invalid");
+});
+
+test("eine leere Kontaktangabe bleibt empty und eine gültige bleibt present", () => {
+  const before = baseDraft();
+  const empty = structuredClone(before);
+  empty.salon.email = "";
+  assert.equal(createDraftEffect(before, empty, { type: "set-field", field: "salon.email" }).nextPresence, "empty");
+  const valid = structuredClone(before);
+  valid.salon.instagram = "https://www.instagram.com/studio.miro/";
+  assert.equal(createDraftEffect(before, valid, { type: "set-field", field: "salon.instagram" }).nextPresence, "present");
+});
+
+test("die E-Mail einer Person wird gleich streng bewertet wie die des Salons", () => {
+  const before = baseDraft();
+  const after = structuredClone(before);
+  after.staff[0].email = "anna(at)example.ch";
+  assert.deepEqual(createDraftEffect(before, after, { type: "set-staff-field", staffClientId: "staff-anna", field: "email" }), {
+    type: "staff-field-set", staffClientId: "staff-anna", field: "email", previousPresence: "empty", nextPresence: "invalid",
+  });
 });
 
 test("die gebundenen Eingabefelder decken Text, Schalter und Farbe ab", () => {

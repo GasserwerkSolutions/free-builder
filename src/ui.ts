@@ -7,11 +7,10 @@ import {
   renderPreview,
   renderSaveState,
   schedulePreview,
-  showToast,
   updateMigrationNotice,
   updateReadiness,
 } from "./ui-render.js";
-import { createUiContext, type UiContext } from "./ui-shared.js";
+import { createUiContext, showToast, type UiContext } from "./ui-shared.js";
 
 export class BuilderUi {
   private readonly context: UiContext;

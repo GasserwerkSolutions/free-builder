@@ -165,12 +165,3 @@ export function setViewport(context, viewport) {
     context.previewHint.textContent = labels[viewport] ?? "Desktop";
     document.querySelectorAll("[data-viewport]").forEach((button) => button.classList.toggle("is-active", button.dataset.viewport === viewport));
 }
-export function showToast(message) {
-    document.querySelector(".toast")?.remove();
-    const toast = document.createElement("div");
-    toast.className = "toast";
-    toast.setAttribute("role", "status");
-    toast.textContent = message;
-    document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 4200);
-}

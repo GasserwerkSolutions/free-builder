@@ -1,4 +1,4 @@
-import { cloneDraft, getAtPath, setAtPath } from "./domain-helpers.js";
+import { cloneDraft, getAtPath, normalizeEmail, normalizeInstagramUrl, normalizePhone, setAtPath } from "./domain-helpers.js";
 // The single place that knows where each editable collection lives and what a structural change to
 // it may cascade into. Everything else in this module stays collection-agnostic.
 const COLLECTIONS = {
@@ -19,6 +19,10 @@ const COLLECTIONS = {
         read: (draft) => draft.staff,
         write: (draft, items) => { draft.staff = structuredClone(items); },
         // Removing a person removes the assets they own. Only removals are allowed to follow.
+        // Open for the image step (F4): the reverse direction has no cascade yet — deleting a single
+        // asset leaves staff[].portraitAssetLocalId pointing at it. Today nothing can delete an asset
+        // on its own, so the dangling pointer is not reachable; when image management lands, that
+        // deletion has to declare the pointer reset as part of its scope.
         cascade: (expected, after) => {
             const kept = new Set(after.assets.map((asset) => asset.localId));
             expected.assets = expected.assets.filter((asset) => kept.has(asset.localId));
@@ -31,6 +35,17 @@ const COLLECTIONS = {
         cascade: (expected, after) => { expected.testimonials.enabled = after.testimonials.enabled; },
     },
 };
+// Fields a collection-item edit derives from its primary field. The intent names the primary field
+// only; everything listed here is re-derived by the very same edit and therefore part of its declared
+// scope. Because a derived field can move on its own (a service rename that only reclaims a slug that
+// another service just freed), the change requirement is "at least one declared field moved" — not
+// "the primary one moved". Anything outside this list still fails the whole-draft check below.
+const DERIVED_ITEM_FIELDS = {
+    "services:name": ["slug"],
+};
+function declaredItemFields(collection, field) {
+    return [field, ...(DERIVED_ITEM_FIELDS[`${collection}:${field}`] ?? [])];
+}
 export function draftsEqualIgnoringUpdatedAt(left, right) {
     return JSON.stringify(comparableDraft(left)) === JSON.stringify(comparableDraft(right));
 }
@@ -40,24 +55,25 @@ export function createDraftEffect(before, after, intent) {
     switch (intent.type) {
         case "set-field": {
             const change = pathChange(before, after, intent.field, "INVALID_FIELD_SET", "UNEXPECTED_FIELD_CHANGE");
-            return { type: "field-set", field: intent.field, previousPresence: presence(change.previous), nextPresence: presence(change.next) };
+            const rule = FIELD_PRESENCE_RULES[intent.field];
+            return { type: "field-set", field: intent.field, previousPresence: presence(change.previous, rule), nextPresence: presence(change.next, rule) };
         }
         case "set-service-field": {
             // Renaming a service re-derives its slug, so the slug is part of the declared change.
-            const fields = intent.field === "name" ? ["name", "slug"] : [intent.field];
-            const change = itemFieldChange(before, after, "services", intent.serviceClientId, fields, intent.field, "INVALID_SERVICE_FIELD_SET", "UNEXPECTED_SERVICE_FIELD_CHANGE");
+            const change = itemFieldChange(before, after, "services", intent.serviceClientId, declaredItemFields("services", intent.field), "INVALID_SERVICE_FIELD_SET", "UNEXPECTED_SERVICE_FIELD_CHANGE");
             return { type: "service-field-set", serviceClientId: intent.serviceClientId, field: intent.field, previousPresence: presence(change.previous), nextPresence: presence(change.next) };
         }
         case "set-testimonial-field": {
-            const change = itemFieldChange(before, after, "testimonials", intent.testimonialClientId, [intent.field], intent.field, "INVALID_TESTIMONIAL_FIELD_SET", "UNEXPECTED_TESTIMONIAL_FIELD_CHANGE");
+            const change = itemFieldChange(before, after, "testimonials", intent.testimonialClientId, declaredItemFields("testimonials", intent.field), "INVALID_TESTIMONIAL_FIELD_SET", "UNEXPECTED_TESTIMONIAL_FIELD_CHANGE");
             return { type: "testimonial-field-set", testimonialClientId: intent.testimonialClientId, field: intent.field, previousPresence: presence(change.previous), nextPresence: presence(change.next) };
         }
         case "set-staff-field": {
-            const change = itemFieldChange(before, after, "staff", intent.staffClientId, [intent.field], intent.field, "INVALID_STAFF_FIELD_SET", "UNEXPECTED_STAFF_FIELD_CHANGE");
-            return { type: "staff-field-set", staffClientId: intent.staffClientId, field: intent.field, previousPresence: presence(change.previous), nextPresence: presence(change.next) };
+            const change = itemFieldChange(before, after, "staff", intent.staffClientId, declaredItemFields("staff", intent.field), "INVALID_STAFF_FIELD_SET", "UNEXPECTED_STAFF_FIELD_CHANGE");
+            const rule = STAFF_FIELD_PRESENCE_RULES[intent.field];
+            return { type: "staff-field-set", staffClientId: intent.staffClientId, field: intent.field, previousPresence: presence(change.previous, rule), nextPresence: presence(change.next, rule) };
         }
         case "set-staff-services": {
-            const change = itemFieldChange(before, after, "staff", intent.staffClientId, ["serviceClientIds"], "serviceClientIds", "INVALID_STAFF_SERVICES_SET", "UNEXPECTED_STAFF_SERVICES_CHANGE");
+            const change = itemFieldChange(before, after, "staff", intent.staffClientId, ["serviceClientIds"], "INVALID_STAFF_SERVICES_SET", "UNEXPECTED_STAFF_SERVICES_CHANGE");
             return { type: "staff-services-set", staffClientId: intent.staffClientId, previousCount: asStringList(change.previous).length, nextCount: asStringList(change.next).length };
         }
         case "set-business-hours": {
@@ -68,7 +84,7 @@ export function createDraftEffect(before, after, intent) {
         }
         case "set-staff-hours": {
             // Mirror image of the above: one person's workingHours, never the salon's businessHours.
-            const change = itemFieldChange(before, after, "staff", intent.staffClientId, ["workingHours"], "workingHours", "INVALID_STAFF_HOURS_SET", "UNEXPECTED_STAFF_HOURS_CHANGE");
+            const change = itemFieldChange(before, after, "staff", intent.staffClientId, ["workingHours"], "INVALID_STAFF_HOURS_SET", "UNEXPECTED_STAFF_HOURS_CHANGE");
             return { type: "staff-hours-set", staffClientId: intent.staffClientId, previousOpenDays: openDays(change.previous), nextOpenDays: openDays(change.next) };
         }
         case "insert-collection-item": return structuralEffect(before, after, intent.collection, intent.clientId, "insert");
@@ -130,14 +146,18 @@ function pathChange(before, after, path, invalidCode, unexpectedCode) {
     expectDraft(before, after, (expected) => setAtPath(expected, path, structuredClone(next)), unexpectedCode);
     return { previous, next };
 }
-// Verify a change to named fields of one collection item. `primaryField` is the field the intent is
-// about; the remaining fields are the derived ones the same edit is allowed to touch.
-function itemFieldChange(before, after, collection, clientId, fields, primaryField, invalidCode, unexpectedCode) {
+// Verify a change to the declared fields of one collection item. `fields[0]` is the field the intent
+// is about; the rest are the derived ones the same edit re-derives. At least one of them has to have
+// moved — requiring the primary one would reject a rename that only re-derived its slug.
+function itemFieldChange(before, after, collection, clientId, fields, invalidCode, unexpectedCode) {
+    const primaryField = fields[0];
+    if (!primaryField)
+        throw new Error(invalidCode);
     const previous = findItem(before, collection, clientId);
     const next = findItem(after, collection, clientId);
     if (!previous || !next)
         throw new Error(invalidCode);
-    if (sameValue(previous[primaryField], next[primaryField]))
+    if (fields.every((field) => sameValue(previous[field], next[field])))
         throw new Error(invalidCode);
     expectDraft(before, after, (expected) => {
         const target = findItem(expected, collection, clientId);
@@ -208,12 +228,23 @@ function asStringList(value) { return Array.isArray(value) ? value : []; }
 function openDays(value) {
     return Array.isArray(value) ? value.filter((day) => !day.closed).length : 0;
 }
-// "Does this field carry content?" — deliberately two-valued. The draft normalizer already coerces
-// malformed input (invalid colours, non-http Instagram links) away, so a third "invalid" state could
-// never survive normalization in this model.
-function presence(value) {
-    if (typeof value === "string")
-        return value.trim() ? "present" : "empty";
+const isEmail = (value) => normalizeEmail(value) !== null;
+const isPhone = (value) => normalizePhone(value) !== null;
+const isInstagram = (value) => normalizeInstagramUrl(value) !== null;
+const FIELD_PRESENCE_RULES = {
+    "salon.email": isEmail,
+    "salon.phone": isPhone,
+    "salon.instagram": isInstagram,
+};
+const STAFF_FIELD_PRESENCE_RULES = {
+    email: isEmail,
+};
+function presence(value, rule) {
+    if (typeof value === "string") {
+        if (!value.trim())
+            return "empty";
+        return !rule || rule(value) ? "present" : "invalid";
+    }
     if (typeof value === "number")
         return Number.isFinite(value) && value !== 0 ? "present" : "empty";
     if (typeof value === "boolean")

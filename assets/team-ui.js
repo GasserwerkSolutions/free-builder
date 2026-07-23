@@ -1,5 +1,5 @@
 import { addRange, copyBusinessHoursToStaff, copyDayToDays, createStaffDraft, escapeAttr, escapeHtml, getTeamReadinessChecks, getTeamReadinessIssues, removeRange, removeStaffAndOwnedAssets, setAllBookableServicesForStaff, setDayClosed, setRangeField, setStaffService, staffHasPersonalHours, validateWeeklySchedule, } from "./domain.js";
-import { STAFF_HOURS_NS, renderScheduleEditor } from "./ui-shared.js";
+import { STAFF_HOURS_NS, renderScheduleEditor, safeMutate, showToast } from "./ui-shared.js";
 const installedStores = new WeakSet();
 let lastShapeFingerprint = "";
 function ensureTeamSurface() {
@@ -120,20 +120,11 @@ function appendTeamReadiness(store) {
 function staffIdFrom(target) {
     return target.closest("[data-staff-card]")?.dataset.staffId ?? "";
 }
-function showTeamToast(message) {
-    document.querySelector(".toast")?.remove();
-    const toast = document.createElement("div");
-    toast.className = "toast";
-    toast.setAttribute("role", "status");
-    toast.textContent = message;
-    document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 4200);
-}
 // Mutate one person's working hours. Scoped by both the staff card and the day-of-week row so the
 // staff namespace stays isolated from the salon opening-hours handler in ui-actions. The declared
 // intent is that person's workingHours only — a write that also touched businessHours is rejected.
 function mutateStaffHours(store, staffId, updater, label, key) {
-    store.mutate((draft) => {
+    safeMutate(store, (draft) => {
         const person = draft.staff.find((item) => item.clientId === staffId);
         if (person)
             person.workingHours = updater(person.workingHours);
@@ -142,7 +133,7 @@ function mutateStaffHours(store, staffId, updater, label, key) {
 // serviceClientIds is the only truth about who may perform what, so an assignment edit declares
 // exactly that list as its scope — it may not drag a service definition or a schedule along.
 function mutateStaffServices(store, staffId, mutator, label) {
-    store.mutate(mutator, { intent: { type: "set-staff-services", staffClientId: staffId }, history: { label } });
+    safeMutate(store, mutator, { intent: { type: "set-staff-services", staffClientId: staffId }, history: { label } });
 }
 function handleStaffHourAction(store, button) {
     const staffId = staffIdFrom(button);
@@ -205,7 +196,7 @@ export function installTeamUi(store, repository) {
         if (action === "add-staff") {
             // Built outside the mutator so the intent can name the person it is about to insert.
             const person = createStaffDraft();
-            store.mutate((draft) => { draft.staff.push(person); }, { intent: { type: "insert-collection-item", collection: "staff", clientId: person.clientId }, history: { label: "Person hinzugefügt" } });
+            safeMutate(store, (draft) => { draft.staff.push(person); }, { intent: { type: "insert-collection-item", collection: "staff", clientId: person.clientId }, history: { label: "Person hinzugefügt" } });
             renderTeam(store);
             return;
         }
@@ -213,7 +204,7 @@ export function installTeamUi(store, repository) {
             return;
         if (action === "remove-staff") {
             const assetIds = store.snapshot.assets.filter((asset) => asset.ownerClientId === staffId).map((asset) => asset.localId);
-            store.mutate((draft) => removeStaffAndOwnedAssets(draft, staffId), { intent: { type: "remove-collection-item", collection: "staff", clientId: staffId }, history: { label: "Person entfernt" } });
+            safeMutate(store, (draft) => removeStaffAndOwnedAssets(draft, staffId), { intent: { type: "remove-collection-item", collection: "staff", clientId: staffId }, history: { label: "Person entfernt" } });
             void repository.deleteAssetBlobs(assetIds).catch((error) => console.error("Staff asset cleanup failed.", error));
         }
         if (action === "all-services")
@@ -229,8 +220,8 @@ export function installTeamUi(store, repository) {
                 return;
             // Copying reads businessHours but may only write this person's workingHours; the two schedules
             // stay separate truths and the mutation verifier enforces that.
-            store.mutate((draft) => { copyBusinessHoursToStaff(draft, staffId, { overwrite: true }); }, { intent: { type: "set-staff-hours", staffClientId: staffId }, history: { label: "Öffnungszeiten als Arbeitszeiten übernommen" } });
-            showTeamToast("Die Öffnungszeiten wurden als persönliche Arbeitszeiten übernommen. Sie können später unabhängig verfeinert werden.");
+            safeMutate(store, (draft) => { copyBusinessHoursToStaff(draft, staffId, { overwrite: true }); }, { intent: { type: "set-staff-hours", staffClientId: staffId }, history: { label: "Öffnungszeiten als Arbeitszeiten übernommen" } });
+            showToast("Die Öffnungszeiten wurden als persönliche Arbeitszeiten übernommen. Sie können später unabhängig verfeinert werden.");
         }
         renderTeam(store);
     });
@@ -247,7 +238,7 @@ export function installTeamUi(store, repository) {
             const checkbox = target instanceof HTMLInputElement && target.type === "checkbox";
             if ((checkbox && event.type !== "change") || (!checkbox && event.type !== "input"))
                 return;
-            store.mutate((draft) => {
+            safeMutate(store, (draft) => {
                 const person = draft.staff.find((item) => item.clientId === staffId);
                 if (!person)
                     return;

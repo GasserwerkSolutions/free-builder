@@ -35,8 +35,6 @@ type RedoRecord = { after: BuilderDraftV2; intent: DraftMutationIntent; history:
 /** How long consecutive edits to the same target collapse into a single undo step. */
 const HISTORY_GROUP_MS = 900;
 const HISTORY_LIMIT = 60;
-/** Used when a caller does not describe its change; accepted, but never verified. */
-const UNDESCRIBED: DraftMutationDescriptor = { intent: { type: "batch" }, history: { label: "Änderung" } };
 
 export class BuilderStore {
   private draft: BuilderDraftV2;
@@ -71,9 +69,10 @@ export class BuilderStore {
 
   /**
    * Apply a mutation and prove it did what the descriptor claims. Returns null when the draft did
-   * not actually change; throws when the applied change is not the declared one.
+   * not actually change; throws when the applied change is not the declared one. The descriptor is
+   * mandatory on purpose — a caller that may omit it turns the verification into a fiction.
    */
-  mutate(mutator: (draft: BuilderDraftV2) => void, descriptor: DraftMutationDescriptor = UNDESCRIBED): DraftMutation | null {
+  mutate(mutator: (draft: BuilderDraftV2) => void, descriptor: DraftMutationDescriptor): DraftMutation | null {
     const before = cloneDraft(this.draft);
     const working = cloneDraft(this.draft);
     mutator(working);
@@ -93,13 +92,17 @@ export class BuilderStore {
     const normalized = normalizeDraftV2(next);
     this.clearHistory();
     this.cancelPendingSaves();
+    const history: HistoryDescriptor = { label: REPLACE_LABELS[reason] };
     if (draftsEqualIgnoringUpdatedAt(before, normalized)) {
+      // Same content, but a different draft object and a cleared history. The revision does not move
+      // (nothing changed), yet every subscriber is told — not just the history ones — so no surface
+      // keeps rendering from the object that was just replaced.
       this.draft = normalized;
+      this.notify({ revision: this.revisionValue, source: sourceForReplaceReason(reason), effect: { type: "draft-replace", reason }, history, occurredAt: Date.now() });
       this.emitHistory();
       this.persistAfterReplace(persist);
       return null;
     }
-    const history: HistoryDescriptor = { label: REPLACE_LABELS[reason] };
     const mutation = this.commit(normalized, sourceForReplaceReason(reason), { type: "draft-replace", reason }, history, Date.now());
     this.persistAfterReplace(persist);
     return mutation;
@@ -146,10 +149,12 @@ export class BuilderStore {
     this.draft = next;
     this.revisionValue += 1;
     const mutation: DraftMutation = { revision: this.revisionValue, source, effect, history, occurredAt };
-    this.listeners.forEach((listener) => listener(this.draft, mutation));
+    this.notify(mutation);
     this.emitHistory();
     return mutation;
   }
+
+  private notify(mutation: DraftMutation): void { this.listeners.forEach((listener) => listener(this.draft, mutation)); }
 
   // Consecutive edits that share a history key and aim at the same target collapse into one step.
   private recordHistory(before: BuilderDraftV2, after: BuilderDraftV2, effect: DraftEffect, descriptor: DraftMutationDescriptor, now: number): void {
@@ -162,24 +167,30 @@ export class BuilderStore {
       && now - this.lastHistoryAt < HISTORY_GROUP_MS,
     );
     let collapsed = false;
-    if (mergesWithPrevious) {
-      const record = this.undoStack.at(-1);
-      if (!record) throw new Error("MISSING_GROUPED_HISTORY_RECORD");
-      if (draftsEqualIgnoringUpdatedAt(record.before, after)) {
-        // The grouped edit came back to where it started; drop the step instead of keeping a no-op.
-        this.undoStack.pop();
-        collapsed = true;
+    try {
+      if (mergesWithPrevious) {
+        const record = this.undoStack.at(-1);
+        if (!record) throw new Error("MISSING_GROUPED_HISTORY_RECORD");
+        if (draftsEqualIgnoringUpdatedAt(record.before, after)) {
+          // The grouped edit came back to where it started; drop the step instead of keeping a no-op.
+          this.undoStack.pop();
+          collapsed = true;
+        } else {
+          record.effect = createDraftEffect(record.before, after, record.intent);
+          record.history = descriptor.history;
+          record.createdAt = now;
+        }
       } else {
-        record.effect = createDraftEffect(record.before, after, record.intent);
-        record.history = descriptor.history;
-        record.createdAt = now;
+        this.pushUndo({ before, effect, history: descriptor.history, intent: descriptor.intent, createdAt: now });
       }
-    } else {
-      this.pushUndo({ before, effect, history: descriptor.history, intent: descriptor.intent, createdAt: now });
+      // A rejected mutation changes nothing, so it must not drop a redo step either.
+      this.redoStack = [];
+    } finally {
+      // The grouping window moves with the attempt, not only with the accepted edit. Leaving it on
+      // the older timestamp would freeze the window and tear a continuous edit apart afterwards.
+      if (collapsed) this.flushHistoryGroup();
+      else { this.lastHistoryKey = key; this.lastHistoryIntent = descriptor.intent; this.lastHistoryAt = now; }
     }
-    this.redoStack = [];
-    if (collapsed) this.flushHistoryGroup();
-    else { this.lastHistoryKey = key; this.lastHistoryIntent = descriptor.intent; this.lastHistoryAt = now; }
   }
 
   private pushUndo(record: InternalHistoryRecord): void {
@@ -223,6 +234,10 @@ export class BuilderStore {
       this.emitSave("saving");
       try {
         await this.repository.putDraft(snapshot);
+        // The write took time, and an authoritative replacement may have landed while it was in
+        // flight. Re-check after the await: a snapshot that is no longer the truth must not report
+        // itself as the saved state.
+        if (generation !== this.saveGeneration) return;
         this.emitSave("saved");
       } catch (error) {
         this.emitSave("error", error);
