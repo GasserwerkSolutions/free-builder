@@ -1,4 +1,4 @@
-import { MAX_PUBLISH_PAYLOAD_BYTES, PUBLISH_INTENT_PATH, PUBLISH_TIMEOUT_MS, outcomeForResponse, payloadByteLength, publishFailure, } from "./publish-contract.js";
+import { MAX_PUBLISH_PAYLOAD_BYTES, PUBLISH_INTENT_PATH, PUBLISH_TIMEOUT_MS, outcomeForResponse, parseRetryAfter, payloadByteLength, publishFailure, } from "./publish-contract.js";
 export function publishEndpoint(baseUrl = "") {
     const trimmed = baseUrl.trim().replace(/\/+$/, "");
     return `${trimmed}${PUBLISH_INTENT_PATH}`;
@@ -34,7 +34,7 @@ export async function sendPublishIntent(request, options = {}) {
             credentials: "same-origin",
             ...(controller ? { signal: controller.signal } : {}),
         });
-        return outcomeForResponse(response.status, await readJson(response));
+        return outcomeForResponse(response.status, await readJson(response), readRetryAfter(response));
     }
     catch (error) {
         if (timedOut)
@@ -69,6 +69,17 @@ async function readJson(response) {
     catch {
         return null;
     }
+}
+/** A missing or unreadable header is no wait. It must not turn into a made-up one. */
+function readRetryAfter(response) {
+    let raw = null;
+    try {
+        raw = response.headers?.get("retry-after") ?? null;
+    }
+    catch {
+        return null;
+    }
+    return parseRetryAfter(raw, Date.now());
 }
 function isAbortError(error) {
     return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");

@@ -3,6 +3,7 @@ import {
   PUBLISH_INTENT_PATH,
   PUBLISH_TIMEOUT_MS,
   outcomeForResponse,
+  parseRetryAfter,
   payloadByteLength,
   publishFailure,
   type PublishOutcome,
@@ -26,7 +27,11 @@ export type PublishRequestInit = {
   credentials?: "same-origin";
 };
 
-export type PublishResponse = { status: number; text(): Promise<string> };
+/**
+ * `headers` is optional because not every transport has them, but without it a 429 can never say
+ * how long to wait — and a surface that cannot name the wait may not pretend to know it.
+ */
+export type PublishResponse = { status: number; text(): Promise<string>; headers?: { get(name: string): string | null } };
 
 export type PublishClientOptions = {
   /** Prefix for the endpoint. Empty (the default) keeps the call relative. */
@@ -73,7 +78,7 @@ export async function sendPublishIntent(request: PublishRequest, options: Publis
       credentials: "same-origin",
       ...(controller ? { signal: controller.signal } : {}),
     });
-    return outcomeForResponse(response.status, await readJson(response));
+    return outcomeForResponse(response.status, await readJson(response), readRetryAfter(response));
   } catch (error) {
     if (timedOut) return publishFailure("TIMEOUT", null, `${timeoutMs}`);
     // An aborted request that did not time out was cancelled by us; anything else is the network.
@@ -93,6 +98,13 @@ async function readJson(response: PublishResponse): Promise<unknown> {
   try { raw = await response.text(); } catch { return null; }
   if (!raw.trim()) return null;
   try { return JSON.parse(raw) as unknown; } catch { return null; }
+}
+
+/** A missing or unreadable header is no wait. It must not turn into a made-up one. */
+function readRetryAfter(response: PublishResponse): number | null {
+  let raw: string | null = null;
+  try { raw = response.headers?.get("retry-after") ?? null; } catch { return null; }
+  return parseRetryAfter(raw, Date.now());
 }
 
 function isAbortError(error: unknown): boolean {

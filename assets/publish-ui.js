@@ -2,6 +2,7 @@ import { escapeAttr, escapeHtml } from "./domain.js";
 import { sendPublishIntent } from "./publish-client.js";
 import { MAX_PUBLISH_PAYLOAD_BYTES } from "./publish-contract.js";
 import { PublishFlow } from "./publish-flow.js";
+import { readDraftIdentity } from "./publish-identity.js";
 import { stampOf } from "./publish-preflight.js";
 import { readPreference, writePreference } from "./ui-shared.js";
 // The publish surface.
@@ -15,7 +16,18 @@ import { readPreference, writePreference } from "./ui-shared.js";
 // moment. Everything the user edits afterwards stays in this browser. Nothing pushes it across, and
 // the builder has no channel to update an intent it does not even have an id for. Hiding that would
 // leave people editing for an hour and wondering why the confirmation mail shows an older salon.
-const SUBMISSION_PREFIX = "gasserwerk-salon-publish-v1:";
+//
+// The third is the reason the note below stores a fingerprint: "your later edits are not over there
+// yet" is only worth saying if it is true, and it can only be true if the surface knows WHICH draft
+// went over — across a reload, where every session-local counter starts at zero again.
+/**
+ * ONE note, and it names its owner.
+ *
+ * The builder holds exactly one local draft at a time, so a key per draftId would only pile up
+ * entries nobody can read again — and a note that has to be matched against the current draft anyway
+ * is better kept in a single place, where it cannot become an orphan.
+ */
+const SUBMISSION_KEY = "gasserwerk-salon-publish-v1";
 /**
  * Wire the publish flow to the surface. Returns the teardown, so a destroyed editor leaves no
  * listener behind — the same contract the sidebar and the mobile modes follow.
@@ -25,6 +37,13 @@ export function installPublishUi(context, options = {}) {
     if (!elements)
         return () => { };
     const now = options.now ?? (() => new Date().toISOString());
+    const clockMs = () => {
+        const parsed = Date.parse(now());
+        return Number.isNaN(parsed) ? Date.now() : parsed;
+    };
+    // Whether "your draft is stored here" can ever be said at all. Without durable storage the editor
+    // already warns in the save pill; the publish surface must not quietly promise the opposite.
+    const localCopyDurable = !context.volatileStorage;
     const flow = new PublishFlow({
         readDraft: () => context.store.snapshot,
         readStamp: () => stampOf(context.store),
@@ -32,11 +51,39 @@ export function installPublishUi(context, options = {}) {
         send: (request) => sendPublishIntent(request, options),
         now,
     });
-    const unsubscribeFlow = flow.subscribe((state) => render(elements, flow.address, state));
-    // Every accepted draft change can turn a completed hand-over into an outdated one.
+    // A rate-limit lock has to end by itself. Nothing else on this surface would ever lift it: the
+    // button that would trigger a re-render is exactly the button the lock disables.
+    let cooldownTimer = null;
+    const clearCooldownTimer = () => {
+        if (cooldownTimer !== null) {
+            clearTimeout(cooldownTimer);
+            cooldownTimer = null;
+        }
+    };
+    const armCooldownTimer = (state) => {
+        clearCooldownTimer();
+        if (state.retryNotBefore === null)
+            return;
+        const remaining = Math.max(0, state.retryNotBefore - clockMs());
+        cooldownTimer = setTimeout(() => { cooldownTimer = null; flow.refreshRateLimit(); }, remaining + 50);
+    };
+    const unsubscribeFlow = flow.subscribe((state) => {
+        render(elements, flow.address, state, localCopyDurable);
+        armCooldownTimer(state);
+    });
+    let knownDraftId = context.store.snapshot.draftId;
     const unsubscribeStore = context.store.subscribe(() => {
+        const draft = context.store.snapshot;
+        // Every accepted draft change can turn a completed hand-over into an outdated one — and an
+        // authoritative replacement takes the hand-over away from the draft on screen entirely.
         flow.noteDraftChanged();
-        renderAssetStep(elements, context.store.snapshot);
+        if (draft.draftId !== knownDraftId) {
+            knownDraftId = draft.draftId;
+            // A different draft is in place now. It may carry a hand-over of its own; it certainly does
+            // not inherit the previous one.
+            applySubmissionNote(flow);
+        }
+        renderAssetStep(elements, draft);
     });
     renderAssetStep(elements, context.store.snapshot);
     const onClick = (event) => {
@@ -55,22 +102,36 @@ export function installPublishUi(context, options = {}) {
         if (event.target === elements.email)
             flow.setEmail(elements.email.value);
     };
+    // The address field is the last thing a user types before publishing, and Enter is what they press
+    // there. It is not inside a form, so nothing would happen without this.
+    const onKeydown = (event) => {
+        if (event.key !== "Enter" || event.target !== elements.email)
+            return;
+        event.preventDefault();
+        void runSubmit(flow, elements, context);
+    };
     document.addEventListener("click", onClick);
     document.addEventListener("input", onInput);
     document.addEventListener("change", onInput);
-    restoreSubmission(flow, context.store.snapshot);
+    document.addEventListener("keydown", onKeydown);
+    applySubmissionNote(flow);
     return () => {
         document.removeEventListener("click", onClick);
         document.removeEventListener("input", onInput);
         document.removeEventListener("change", onInput);
+        document.removeEventListener("keydown", onKeydown);
+        clearCooldownTimer();
         unsubscribeFlow();
         unsubscribeStore();
     };
 }
 async function runSubmit(flow, elements, context) {
     const state = await flow.submit();
-    if (state.phase === "submitted" && state.submittedAt && state.submittedRevision !== null) {
-        rememberSubmission(context.store.snapshot, state.submittedAt, state.submittedRevision);
+    // What is filed is what the flow decided BEFORE the request went out, so a draft that was replaced
+    // mid-flight cannot end up owning someone else's hand-over. The note is filed for the draft it
+    // belongs to even in that case — it is not lost, it is simply not the current draft's.
+    if (state.phase === "submitted" && state.submittedAt && state.submittedDraft) {
+        rememberSubmission(state.submittedAt, state.submittedDraft);
     }
     // A refused attempt has to land somewhere the user can act: on the address, or on the first open
     // entry of the list they were already looking at.
@@ -84,31 +145,41 @@ async function runSubmit(flow, elements, context) {
 }
 /**
  * Bring back the one fact an earlier session established without asking the server: that a copy was
- * handed over, and which revision it was.
+ * handed over, of which draft, and when.
  *
  * This is deliberately NOT written into `draft.publication`. That block mirrors the SERVER's intent
  * lifecycle (`intentId`, `EMAIL_SENT`, `VERIFIED`, …) and the builder holds none of it: the neutral
  * answer returns no intent id and does not say whether a mail went out. Filling those fields would
- * be inventing server state, so they stay untouched — and the local timestamp lives in the same
- * preference channel that already carries remembered UI state. No token, no image, no draft field.
+ * be inventing server state, so they stay untouched — and the local note lives in the same preference
+ * channel that already carries remembered UI state. No token, no image, no draft field.
  */
-function restoreSubmission(flow, draft) {
-    const raw = readPreference(SUBMISSION_PREFIX + draft.draftId);
+function applySubmissionNote(flow) {
+    const note = readSubmissionNote();
+    // The flow itself refuses a note that names another draft. Nothing is deleted here: a draft that
+    // is imported back later is entitled to its own history again.
+    if (note)
+        flow.restoreSubmission(note.at, note.draft);
+}
+function readSubmissionNote() {
+    const raw = readPreference(SUBMISSION_KEY);
     if (!raw)
-        return;
+        return null;
     try {
         const parsed = JSON.parse(raw);
         if (typeof parsed !== "object" || parsed === null)
-            return;
-        const { at, revision } = parsed;
-        if (typeof at !== "string" || typeof revision !== "number")
-            return;
-        flow.restoreSubmission(at, revision);
+            return null;
+        const { at } = parsed;
+        const draft = readDraftIdentity(parsed);
+        if (typeof at !== "string" || !at || !draft)
+            return null;
+        return { at, draft };
     }
-    catch { /* a damaged note is simply no note */ }
+    catch {
+        return null; /* a damaged note is simply no note */
+    }
 }
-function rememberSubmission(draft, at, revision) {
-    writePreference(SUBMISSION_PREFIX + draft.draftId, JSON.stringify({ at, revision }));
+function rememberSubmission(at, draft) {
+    writePreference(SUBMISSION_KEY, JSON.stringify({ at, ...draft }));
 }
 function findElements() {
     const panel = document.querySelector('[data-panel="publish"]');
@@ -142,16 +213,19 @@ function renderAssetStep(elements, draft) {
         return;
     elements.assetStep.hidden = draft.assets.length === 0;
 }
-function render(elements, address, state) {
+function render(elements, address, state, localCopyDurable) {
     const busy = state.phase === "checking" || state.phase === "sending";
-    elements.submit.disabled = busy;
+    // A rate limit disables the action instead of letting it look available and fail silently.
+    const locked = state.retryNotBefore !== null;
+    elements.submit.disabled = busy || locked;
     elements.submit.textContent = SUBMIT_LABELS[state.phase];
     elements.submit.setAttribute("aria-busy", String(busy));
     elements.retry.hidden = state.phase !== "failed";
+    elements.retry.disabled = locked;
     elements.status.className = `publish-status is-${state.phase}`;
-    elements.status.innerHTML = statusHtml(address, state);
+    elements.status.innerHTML = statusHtml(address, state, localCopyDurable);
 }
-function statusHtml(address, state) {
+function statusHtml(address, state, localCopyDurable) {
     if (state.phase === "ready") {
         return note("Bereit", "Sobald du auf „Website veröffentlichen“ tippst, wird dein Entwurf einmalig übergeben und du bekommst eine Nachricht.");
     }
@@ -162,7 +236,7 @@ function statusHtml(address, state) {
     if (state.phase === "blocked")
         return blockedHtml(state.blocks);
     if (state.phase === "failed")
-        return failedHtml(state.stopCode, state.stopDetail);
+        return failedHtml(state, localCopyDurable);
     return submittedHtml(address, state);
 }
 /**
@@ -199,7 +273,11 @@ function blockHtml(block) {
         return `Der Entwurf ist mit ${formatKilobytes(block.bytes)} zu gross; erlaubt sind ${formatKilobytes(block.limit)}. Kürze die längsten Texte — meist sind es Beschreibungen und Kundenstimmen.`;
     }
     if (block.code === "BINARY_IN_DRAFT") {
-        return `Im Entwurf stecken Bilddaten (${escapeHtml(block.paths.join(", "))}), die auf diesem Weg nicht übergeben werden können. Bilder werden erst nach der Bestätigung hochgeladen.`;
+        // Only reachable through a fault in the builder itself: nothing a user types can produce a value
+        // that JSON cannot carry. So the message says whose problem it is and leaves a way out, instead
+        // of naming a path and stranding the user in front of it.
+        return `Der Entwurf enthält an einer Stelle Daten, die sich nicht übertragen lassen (${escapeHtml(block.paths.join(", "))}). `
+            + `Das ist ein Fehler im Builder, nicht an deinen Angaben — gesendet wurde nichts. Lade die Seite neu; bleibt es dabei, melde dich bei uns.`;
     }
     const count = block.count;
     return `${count} ${count === 1 ? "Punkt ist" : "Punkte sind"} noch offen. Sie stehen oben in der Liste, jeder Eintrag führt direkt ins zuständige Feld. `
@@ -208,11 +286,18 @@ function blockHtml(block) {
 /**
  * One message per failure, and every one of them says what to do next. "Ungültige Eingabe" on its own
  * is exactly the dead end this table exists to replace.
+ *
+ * None of them claims the draft is stored locally. That sentence is added separately, and only where
+ * it has been proven — see `failedHtml`.
  */
 const STOP_MESSAGES = {
     DRAFT_CHANGED: {
         title: "Abgebrochen — nichts wurde gesendet",
         detail: "Während der Prüfung hat sich dein Entwurf geändert, deshalb wurde die Übergabe abgebrochen. Es ist nichts verloren gegangen und nichts angekommen. Tippe einfach nochmals auf Veröffentlichen.",
+    },
+    LOCAL_SAVE_FAILED: {
+        title: "Dein Entwurf konnte nicht gesichert werden",
+        detail: "Der Browser hat das Speichern des Entwurfs abgelehnt, deshalb wurde nichts übergeben. Häufig ist der Speicher voll oder der private Modus blockiert ihn. Kopiere dir den Entwurf über „Entwurf kopieren“ heraus, schaffe Platz und versuche es dann erneut.",
     },
     PAYLOAD_TOO_LARGE: {
         title: "Zu gross für die Übergabe",
@@ -220,7 +305,7 @@ const STOP_MESSAGES = {
     },
     MALFORMED_REQUEST: {
         title: "Der Server konnte die Anfrage nicht lesen",
-        detail: "Das ist ein Fehler auf unserer Seite, nicht an deinen Angaben. Lade die Seite neu und versuche es noch einmal; dein Entwurf bleibt lokal vollständig gespeichert.",
+        detail: "Das ist ein Fehler auf unserer Seite, nicht an deinen Angaben. Lade die Seite neu und versuche es noch einmal.",
     },
     SCHEMA_REJECTED: {
         title: "Der Server hat den Inhalt abgelehnt",
@@ -228,7 +313,7 @@ const STOP_MESSAGES = {
     },
     RATE_LIMITED: {
         title: "Zu viele Versuche",
-        detail: "Es wurden in kurzer Zeit zu viele Anfragen gestellt. Warte ein paar Minuten und versuche es dann erneut. Die Sperre gilt bewusst unabhängig von der Adresse — sie sagt nichts über dein Konto aus.",
+        detail: "Es wurden in kurzer Zeit zu viele Anfragen gestellt. Die Sperre gilt bewusst unabhängig von der Adresse — sie sagt nichts über dein Konto aus.",
     },
     SERVER_ERROR: {
         title: "Der Server hatte ein Problem",
@@ -236,7 +321,7 @@ const STOP_MESSAGES = {
     },
     NETWORK: {
         title: "Keine Verbindung",
-        detail: "Die Anfrage hat den Server nicht erreicht. Prüfe deine Internetverbindung und versuche es erneut. Dein Entwurf ist lokal gespeichert und vollständig.",
+        detail: "Die Anfrage hat den Server nicht erreicht. Prüfe deine Internetverbindung und versuche es erneut.",
     },
     TIMEOUT: {
         title: "Keine Antwort in der erwarteten Zeit",
@@ -247,16 +332,45 @@ const STOP_MESSAGES = {
         detail: "Der Server hat etwas zurückgegeben, das der Builder nicht deuten kann. Es wurde nichts bestätigt. Versuche es erneut; bleibt es dabei, melde dich bei uns.",
     },
 };
-function failedHtml(code, detail) {
+function failedHtml(state, localCopyDurable) {
+    const code = state.stopCode;
     const message = code ? STOP_MESSAGES[code] : { title: "Nicht abgeschickt", detail: "Der Vorgang wurde nicht abgeschlossen." };
-    const technical = detail ? `<span class="publish-status__technical">Technische Angabe: ${escapeHtml(detail)}</span>` : "";
-    return `<strong>${escapeHtml(message.title)}</strong><span>${escapeHtml(message.detail)}</span>${technical}`;
+    const detail = code === "RATE_LIMITED" ? `${message.detail} ${rateLimitWait(state)}` : message.detail;
+    // The most dangerous sentence on this surface, because it is the one people act on. It is said
+    // only where it is proven: the local write of THIS attempt went through, and this browser has
+    // durable storage at all.
+    const reassurance = state.localCopySecured && localCopyDurable
+        ? `<span>Dein Entwurf ist lokal gesichert — er wurde vor diesem Versuch geschrieben.</span>`
+        : "";
+    const technical = state.stopDetail ? `<span class="publish-status__technical">Technische Angabe: ${escapeHtml(state.stopDetail)}</span>` : "";
+    return `<strong>${escapeHtml(message.title)}</strong><span>${escapeHtml(detail)}</span>${reassurance}${technical}`;
+}
+/**
+ * What the surface may say about the wait after a 429.
+ *
+ * A concrete time only when the server named one. Without `Retry-After` the honest answer is that
+ * nobody here knows — the short local lock exists so a second tap cannot burn another attempt, and it
+ * is described as exactly that instead of being dressed up as the server's window.
+ */
+function rateLimitWait(state) {
+    if (state.retryNotBefore === null)
+        return "Die Wartezeit ist abgelaufen — du kannst es jetzt erneut versuchen.";
+    if (state.retryAfterMs !== null)
+        return `Der Server bittet um ${formatWait(state.retryAfterMs)} Pause; so lange bleibt der Knopf gesperrt.`;
+    return "Wie lange gesperrt wird, sagt der Server nicht — deshalb wird hier keine Zeit versprochen. Der Knopf bleibt kurz gesperrt, damit kein weiterer Versuch verbrannt wird; danach am besten ein paar Minuten warten.";
 }
 function note(title, detail) {
     return `<strong>${escapeHtml(title)}</strong><span>${escapeHtml(detail)}</span>`;
 }
 function formatKilobytes(bytes) {
     return `${Math.round(bytes / 1024)} KB`;
+}
+function formatWait(ms) {
+    const seconds = Math.max(1, Math.round(ms / 1000));
+    if (seconds < 90)
+        return seconds === 1 ? "1 Sekunde" : `${seconds} Sekunden`;
+    const minutes = Math.round(seconds / 60);
+    return minutes === 1 ? "1 Minute" : `${minutes} Minuten`;
 }
 function formatMoment(iso) {
     if (!iso)

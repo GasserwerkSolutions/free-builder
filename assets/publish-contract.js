@@ -16,37 +16,66 @@ export const PUBLISH_INTENT_PATH = "/api/builder/publish-intents";
 export const MAX_PUBLISH_PAYLOAD_BYTES = 256 * 1024;
 /** How long the builder waits before it calls a silent request a timeout. */
 export const PUBLISH_TIMEOUT_MS = 20_000;
-export function publishFailure(code, status = null, detail = null) {
-    return { ok: false, code, status, detail };
+export function publishFailure(code, status = null, detail = null, retryAfterMs = null) {
+    return { ok: false, code, status, detail, retryAfterMs };
 }
+/**
+ * A wording that means "I could not even read your body". Only ever a HINT on top of the default
+ * below — a client may not decide the difference between two failure classes by grepping German
+ * prose it does not own, so this list may be wrong without the mapping becoming wrong.
+ */
+const MALFORMED_HINT = /(?:ungültige anfrage|malformed|invalid json|kein gültiges json|nicht lesbar|could not parse)/i;
 /**
  * Map one HTTP answer onto an outcome.
  *
- * The two 400s are deliberately kept apart. `Ungültige Anfrage` means the body never parsed as JSON
- * (a builder bug, nothing the user typed); `Ungültige Eingabe` means the schema refused the content
- * (something in the draft or the address). Telling the user "Ungültige Eingabe" for either would be
- * exactly the useless message this stage exists to remove.
+ * The two 400s stay apart, but the default now points the right way. This client builds every body
+ * with `JSON.stringify`, so it cannot realistically send something the server fails to PARSE — a 400
+ * it did not explain is therefore a rejected CONTENT, which is the case the user can actually do
+ * something about. The old default sent every unexplained 400 to "we sent garbage, reload the page",
+ * which points at nothing and hides the field that has to be fixed.
  */
-export function outcomeForResponse(status, payload) {
+export function outcomeForResponse(status, payload, retryAfterMs = null) {
     if (status === 200 || status === 201 || status === 202) {
         return isNeutralSuccess(payload) ? { ok: true } : publishFailure("UNEXPECTED_RESPONSE", status, describePayload(payload));
     }
     if (status === 413)
         return publishFailure("PAYLOAD_TOO_LARGE", status, errorText(payload));
     if (status === 429)
-        return publishFailure("RATE_LIMITED", status, errorText(payload));
+        return publishFailure("RATE_LIMITED", status, errorText(payload), retryAfterMs);
     if (status === 400) {
         const message = errorText(payload) ?? "";
-        // Match on the documented wording, but fall back to the parse-level reading rather than
-        // guessing: an unknown 400 is more likely a rejected body than a rejected schema.
-        if (/Eingabe/i.test(message))
-            return publishFailure("SCHEMA_REJECTED", status, message || null);
-        return publishFailure("MALFORMED_REQUEST", status, message || null);
+        if (MALFORMED_HINT.test(message))
+            return publishFailure("MALFORMED_REQUEST", status, message || null);
+        return publishFailure("SCHEMA_REJECTED", status, message || null);
     }
     if (status >= 500)
         return publishFailure("SERVER_ERROR", status, errorText(payload));
     return publishFailure("UNEXPECTED_RESPONSE", status, errorText(payload));
 }
+/**
+ * Read `Retry-After` the two ways RFC 9110 allows: a number of seconds, or an HTTP date.
+ *
+ * Anything else is no answer at all and comes back as null, because an invented wait is worse than
+ * an admitted "the server did not say" — the surface builds a concrete promise out of this number.
+ */
+export function parseRetryAfter(raw, nowMs) {
+    if (typeof raw !== "string")
+        return null;
+    const trimmed = raw.trim();
+    if (!trimmed)
+        return null;
+    if (/^\d+$/.test(trimmed)) {
+        const seconds = Number(trimmed);
+        return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, MAX_RETRY_AFTER_SECONDS) * 1000 : null;
+    }
+    const at = Date.parse(trimmed);
+    if (Number.isNaN(at))
+        return null;
+    const wait = at - nowMs;
+    return wait > 0 ? Math.min(wait, MAX_RETRY_AFTER_SECONDS * 1000) : null;
+}
+/** A day. Past this the value says more about a broken proxy than about a rate limit. */
+const MAX_RETRY_AFTER_SECONDS = 86_400;
 /** `{ ok: true }` and nothing else. An answer that merely looks friendly is not a success. */
 function isNeutralSuccess(payload) {
     return typeof payload === "object" && payload !== null && payload.ok === true;

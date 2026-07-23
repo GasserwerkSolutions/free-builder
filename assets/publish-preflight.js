@@ -43,12 +43,19 @@ function serialiseIntent(body) {
     return JSON.stringify(body);
 }
 /**
- * Every place in the draft that holds something other than text, a number or a boolean.
+ * Every place in the draft holding a value the wire cannot carry.
  *
  * The walk is structural rather than a list of known fields on purpose: the point is to catch what
  * nobody thought of, including the local-asset upload that phases F4/G3 will add. Today the draft has
  * no local assets at all, so this finds nothing — it is the guard that keeps it that way until the
  * authenticated upload exists to carry those bytes properly.
+ *
+ * Strings are explicitly NOT inspected any more. The earlier version flagged any text starting with
+ * `data:` or `blob:`, which was a false positive on ordinary prose — "data: unser neues Konzept" in a
+ * subtitle blocked the publish for good, with a message that named a technical path and offered no
+ * way out. And it never caught what it was written for: normalizeDraftV2 drops foreign fields long
+ * before this runs, so no real draft ever carried an inline image. What a `data:` string actually
+ * risks is size, and size has its own honest, actionable answer in PAYLOAD_TOO_LARGE.
  */
 export function findBinaryValues(draft) {
     const found = [];
@@ -59,12 +66,8 @@ export function findBinaryValues(draft) {
         if (value === null || value === undefined)
             return;
         const type = typeof value;
-        if (type === "string") {
-            if (/^\s*(?:data|blob):/i.test(value))
-                found.push(path);
-            return;
-        }
-        if (type === "number" || type === "boolean")
+        // A string always arrives on the other side exactly as it is. Whatever it looks like.
+        if (type === "string" || type === "number" || type === "boolean")
             return;
         if (type !== "object") {
             found.push(path);

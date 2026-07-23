@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { bootEditor, click, type } from "./helpers/editor-dom.mjs";
+import { readFile } from "node:fs/promises";
+import { bootEditor, click, keydown, type } from "./helpers/editor-dom.mjs";
+import { createDefaultDraft } from "../assets/domain.js";
 import { MAX_PUBLISH_PAYLOAD_BYTES, PUBLISH_INTENT_PATH } from "../assets/publish-contract.js";
 
 // Die Publish-Oberfläche im echten DOM: echte Knöpfe, echte Felder, echte Delegation.
@@ -11,6 +13,27 @@ const settle = async () => { for (let i = 0; i < 6; i += 1) await new Promise((r
 
 const ok = async () => ({ status: 200, text: async () => JSON.stringify({ ok: true }) });
 const answering = (status, payload) => async () => ({ status, text: async () => JSON.stringify(payload) });
+/** Eine 429-Antwort, wahlweise mit Retry-After im Kopf. */
+const rateLimited = (retryAfter = null) => async () => ({
+  status: 429,
+  text: async () => JSON.stringify({ error: "Zu viele Versuche" }),
+  headers: { get: (name) => (String(name).toLowerCase() === "retry-after" ? retryAfter : null) },
+});
+
+/** Eine Übergabe, die erst weiterläuft, wenn der Test sie freigibt. */
+function gatedTransport() {
+  let release = () => {};
+  const gate = new Promise((resolve) => { release = resolve; });
+  return {
+    transport: async () => { await gate; return { status: 200, text: async () => JSON.stringify({ ok: true }) }; },
+    release: () => release(),
+  };
+}
+
+/** Alles, was dieser Browser sich gemerkt hat — genau das, was ein Neuladen wiederfindet. */
+const rememberedPreferences = (window) => Object.fromEntries(
+  Object.keys(window.localStorage).map((key) => [key, window.localStorage.getItem(key)]),
+);
 
 const statusText = (document) => document.getElementById("publishStatus").textContent;
 const publishButton = (document) => document.getElementById("publishButton");
@@ -273,9 +296,7 @@ test("ein Versand aus einer früheren Sitzung überlebt den Neuladen und bleibt 
   const first = await readyEditor({ publishTransport: ok });
   await submitWith({ document: first.document }, "hallo@studio-miro.ch");
   const draft = structuredClone(first.store.snapshot);
-  const remembered = Object.fromEntries(
-    Object.keys(first.window.localStorage).map((key) => [key, first.window.localStorage.getItem(key)]),
-  );
+  const remembered = rememberedPreferences(first.window);
   first.cleanup();
 
   const second = await bootEditor({ draft, preferences: remembered, publishTransport: ok });
@@ -284,6 +305,192 @@ test("ein Versand aus einer früheren Sitzung überlebt den Neuladen und bleibt 
   assert.match(statusText(second.document), /Falls diese Adresse verwendbar ist/);
   assert.equal(second.store.snapshot.publication.intentId, null, "auch über den Neustart wird nichts erfunden");
   second.cleanup();
+});
+
+// --- Wem der Versand gehört, und welchem Stand ----------------------------------------------------
+
+test("nach dem Neuladen ohne eine einzige Änderung steht kein Überholt-Hinweis auf der Fläche", async () => {
+  const first = await readyEditor({ publishTransport: ok });
+  await submitWith({ document: first.document }, "hallo@studio-miro.ch");
+  const draft = structuredClone(first.store.snapshot);
+  const remembered = rememberedPreferences(first.window);
+  first.cleanup();
+
+  const second = await bootEditor({ draft, preferences: remembered, publishTransport: ok });
+  click(second.document.querySelector('[data-panel-target="publish"]'));
+  assert.match(statusText(second.document), /Abgeschickt am/);
+  assert.doesNotMatch(
+    statusText(second.document),
+    /noch nicht drüben/i,
+    "es wurde nichts geändert — ein Überholt-Hinweis würde hier zu einem überzähligen Versand raten",
+  );
+  second.cleanup();
+});
+
+test("nach dem Neuladen meldet die erste echte Änderung den Überholt-Hinweis", async () => {
+  const first = await readyEditor({ publishTransport: ok });
+  await submitWith({ document: first.document }, "hallo@studio-miro.ch");
+  const draft = structuredClone(first.store.snapshot);
+  const remembered = rememberedPreferences(first.window);
+  first.cleanup();
+
+  const second = await bootEditor({ draft, preferences: remembered, publishTransport: ok });
+  click(second.document.querySelector('[data-panel-target="publish"]'));
+  type(second.document.querySelector('[data-bind="salon.tagline"]'), "Coiffeur in Winterthur");
+  assert.match(
+    statusText(second.document),
+    /noch nicht drüben/i,
+    "der Stand auf dem Schirm ist nicht mehr der übergebene, und das muss gesagt werden",
+  );
+  second.cleanup();
+});
+
+test("ein Zurücksetzen während des Fluges heftet den Versand nicht an den neuen Entwurf", async () => {
+  const gate = gatedTransport();
+  const booted = await readyEditor({ publishTransport: gate.transport });
+  type(booted.document.getElementById("publishEmail"), "hallo@studio-miro.ch");
+  click(publishButton(booted.document));
+  await settle();
+  assert.match(statusText(booted.document), /Wird übergeben/, "die Anfrage hängt jetzt wirklich in der Luft");
+
+  // Zurücksetzen: ein frischer Entwurf mit eigener draftId nimmt den Platz ein, während gesendet wird.
+  booted.store.replace(createDefaultDraft("2026-07-23T11:00:00.000Z"), false, "reset");
+  gate.release();
+  await settle();
+
+  assert.doesNotMatch(statusText(booted.document), /Abgeschickt am/, "der frische Entwurf hat nichts abgeschickt");
+  const draft = structuredClone(booted.store.snapshot);
+  const remembered = rememberedPreferences(booted.window);
+  booted.cleanup();
+
+  const second = await bootEditor({ draft, preferences: remembered, publishTransport: ok });
+  click(second.document.querySelector('[data-panel-target="publish"]'));
+  assert.doesNotMatch(statusText(second.document), /Abgeschickt am/, "und behauptet es auch nach dem Neuladen nicht");
+  second.cleanup();
+});
+
+test("ein ausgetauschter Entwurf erbt den Versand des vorherigen nicht", async () => {
+  const { document, store, window, cleanup } = await readyEditor({ publishTransport: ok });
+  await submitWith({ document }, "hallo@studio-miro.ch");
+  assert.match(statusText(document), /Abgeschickt am/);
+
+  store.replace(createDefaultDraft("2026-07-23T11:00:00.000Z"), false, "import");
+  assert.doesNotMatch(statusText(document), /Abgeschickt am/, "eine Notiz gehört genau einem Entwurf");
+  assert.doesNotMatch(statusText(document), /hallo@studio-miro\.ch/);
+
+  const draft = structuredClone(store.snapshot);
+  const remembered = rememberedPreferences(window);
+  cleanup();
+
+  const second = await bootEditor({ draft, preferences: remembered, publishTransport: ok });
+  click(second.document.querySelector('[data-panel-target="publish"]'));
+  assert.doesNotMatch(statusText(second.document), /Abgeschickt am/, "auch der Neustart erbt ihn nicht");
+  second.cleanup();
+});
+
+// --- Ein lokaler Speicherfehler ist kein Netzwerkfehler --------------------------------------------
+
+test("ein fehlgeschlagenes lokales Sichern wird nicht als Verbindungsproblem gemeldet", async () => {
+  const { document, repository, publishCalls, cleanup } = await readyEditor({ publishTransport: ok });
+  repository.putDraft = async () => { throw new Error("QuotaExceededError"); };
+  await submitWith({ document }, "hallo@studio-miro.ch");
+
+  assert.equal(publishCalls.length, 0, "ohne gesicherte lokale Kopie geht nichts raus");
+  assert.doesNotMatch(statusText(document), /Keine Verbindung/, "das Netz war nie das Problem");
+  assert.doesNotMatch(
+    statusText(document),
+    /lokal (gespeichert|gesichert)/i,
+    "genau hier darf die gefährlichste Zusage der Fläche nicht fallen",
+  );
+  assert.match(statusText(document), /konnte nicht gesichert werden/i);
+  assert.equal(document.getElementById("publishRetry").hidden, false, "auch dieser Zustand bietet einen Ausweg an");
+  cleanup();
+});
+
+test("ein echter Netzwerkfehler darf die lokale Sicherung weiterhin zusagen", async () => {
+  const { document, cleanup } = await readyEditor({ publishTransport: async () => { throw new TypeError("Failed to fetch"); } });
+  await submitWith({ document }, "hallo@studio-miro.ch");
+  assert.match(statusText(document), /Keine Verbindung/);
+  assert.match(statusText(document), /lokal gesichert/i, "hier ist die Zusage belegt: die Sicherung lief vor dem Versuch durch");
+  cleanup();
+});
+
+// --- Nach 429: eine Sperrfrist, die ein Tastendruck nicht aufhebt -----------------------------------
+
+test("nach einer 429-Antwort geht ein sofortiger zweiter Versuch nicht mehr raus", async () => {
+  const { document, publishCalls, cleanup } = await readyEditor({ publishTransport: rateLimited() });
+  await submitWith({ document }, "hallo@studio-miro.ch");
+  assert.equal(publishCalls.length, 1);
+  assert.match(statusText(document), /Zu viele Versuche/);
+
+  click(document.getElementById("publishRetry"));
+  click(publishButton(document));
+  await settle();
+  assert.equal(publishCalls.length, 1, "die Sperrfrist lässt keinen zweiten Versuch durch");
+  assert.equal(publishButton(document).disabled, true, "und der Knopf sagt das auch");
+  cleanup();
+});
+
+test("eine Tippfehlerkorrektur hebt die 429-Sperre nicht auf", async () => {
+  const { document, cleanup } = await readyEditor({ publishTransport: rateLimited() });
+  await submitWith({ document }, "hallo@studio-miro.ch");
+  assert.match(statusText(document), /Zu viele Versuche/);
+
+  type(document.getElementById("publishEmail"), "hallo@studio-miro.chh");
+  assert.match(statusText(document), /Zu viele Versuche/, "ein Tastendruck ist keine Entsperrung");
+  assert.doesNotMatch(statusText(document), /^Bereit/, "„Bereit“ wäre hier schlicht falsch");
+  cleanup();
+});
+
+test("ein Retry-After aus der Antwort wird konkret genannt", async () => {
+  const { document, cleanup } = await readyEditor({ publishTransport: rateLimited("120") });
+  await submitWith({ document }, "hallo@studio-miro.ch");
+  assert.match(statusText(document), /2 Minuten/, "wenn der Server eine Zeit nennt, wird sie genannt");
+  cleanup();
+});
+
+test("ohne Retry-After verspricht die Fläche keine Wartezeit", async () => {
+  const { document, cleanup } = await readyEditor({ publishTransport: rateLimited() });
+  await submitWith({ document }, "hallo@studio-miro.ch");
+  assert.match(statusText(document), /sagt der Server nicht/);
+  assert.doesNotMatch(statusText(document), /\d+\s*(Sekunden?|Minuten?)/, "eine erfundene Wartezeit wäre schlimmer als keine");
+  cleanup();
+});
+
+// --- Kein Zustand ohne Ausgang ---------------------------------------------------------------------
+
+test("ein „data:“-Text im Freitext blockiert den Versand nicht", async () => {
+  const { document, publishCalls, cleanup } = await readyEditor({ publishTransport: ok });
+  type(document.querySelector('[data-bind="copy.heroSubtitle"]'), "data: unser neues Konzept");
+  click(document.querySelector('[data-panel-target="publish"]'));
+  await submitWith({ document }, "hallo@studio-miro.ch");
+
+  assert.equal(publishCalls.length, 1, "Freitext ist Text — aus diesem Zustand gab es vorher kein Entrinnen");
+  assert.equal(publishCalls[0].body.draft.copy.heroSubtitle, "data: unser neues Konzept");
+  assert.match(statusText(document), /Abgeschickt/);
+  cleanup();
+});
+
+test("Enter im Adressfeld schickt ab", async () => {
+  const { document, publishCalls, cleanup } = await readyEditor({ publishTransport: ok });
+  const email = document.getElementById("publishEmail");
+  type(email, "hallo@studio-miro.ch");
+  keydown(email, "Enter");
+  await settle();
+
+  assert.equal(publishCalls.length, 1, "die Taste, die man dort drückt, tut auch etwas");
+  assert.match(statusText(document), /Abgeschickt/);
+  cleanup();
+});
+
+test("der Topbar-Knopf des offenen Bereichs trägt eine Auszeichnung, für die es auch eine Regel gibt", async () => {
+  const { document, cleanup } = await bootEditor();
+  const topbarButton = document.querySelector('.topbar__actions [data-panel-target="publish"]');
+  click(topbarButton);
+  assert.match(topbarButton.className, /is-active/);
+  const css = await readFile(new URL("../styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.button\.is-active\s*\{/, "eine Klasse ohne Regel ist eine Auszeichnung ohne Wirkung");
+  cleanup();
 });
 
 test("die Mängelliste verspricht keine Exportsperre und nennt die echte Folge offener Punkte", async () => {

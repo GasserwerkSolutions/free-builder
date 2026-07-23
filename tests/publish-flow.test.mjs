@@ -7,9 +7,11 @@ import {
   MAX_PUBLISH_PAYLOAD_BYTES,
   PUBLISH_INTENT_PATH,
   outcomeForResponse,
+  parseRetryAfter,
   payloadByteLength,
 } from "../assets/publish-contract.js";
 import { publishEndpoint, sendPublishIntent } from "../assets/publish-client.js";
+import { draftIdentity, readDraftIdentity, sameDraftIdentity } from "../assets/publish-identity.js";
 import { findBinaryValues, runPublishPreflight, sameStamp, stampOf } from "../assets/publish-preflight.js";
 import { PublishFlow, initialPublishState } from "../assets/publish-flow.js";
 
@@ -63,6 +65,29 @@ test("jede Antwortart des Endpunkts wird auf einen eigenen Code abgebildet", () 
   assert.equal(outcomeForResponse(418, null).code, "UNEXPECTED_RESPONSE");
 });
 
+test("ein 400 ohne erklärenden Text gilt als abgelehnter Inhalt, nicht als unlesbarer Körper", () => {
+  // Dieser Client serialisiert immer mit JSON.stringify — einen unlesbaren Körper kann er praktisch
+  // nicht senden. Der frühere Standard schickte jeden unerklärten 400 in „wir haben Müll gesendet“
+  // und damit den Benutzer an eine Stelle, an der er nichts tun kann.
+  assert.equal(outcomeForResponse(400, null).code, "SCHEMA_REJECTED");
+  assert.equal(outcomeForResponse(400, {}).code, "SCHEMA_REJECTED");
+  assert.equal(outcomeForResponse(400, { error: "services[0].price ist nicht verwendbar" }).code, "SCHEMA_REJECTED");
+  assert.equal(outcomeForResponse(400, { error: "Malformed JSON body" }).code, "MALFORMED_REQUEST", "nur eine ausdrückliche Aussage kehrt das um");
+  assert.equal(outcomeForResponse(400, { error: "Ungültige Anfrage" }).code, "MALFORMED_REQUEST");
+});
+
+test("Retry-After wird als Sekunden und als Zeitpunkt gelesen — sonst gar nicht", () => {
+  const now = Date.parse("2026-07-23T10:00:00.000Z");
+  assert.equal(parseRetryAfter("120", now), 120_000);
+  assert.equal(parseRetryAfter("  30 ", now), 30_000);
+  assert.equal(parseRetryAfter("Thu, 23 Jul 2026 10:02:00 GMT", now), 120_000);
+  assert.equal(parseRetryAfter("bald", now), null, "eine erfundene Wartezeit wäre schlimmer als keine");
+  assert.equal(parseRetryAfter(null, now), null);
+  assert.equal(parseRetryAfter(undefined, now), null);
+  assert.equal(parseRetryAfter("0", now), null, "keine Wartezeit ist keine Aussage");
+  assert.equal(parseRetryAfter("Thu, 23 Jul 2026 09:58:00 GMT", now), null, "ein vergangener Zeitpunkt auch nicht");
+});
+
 test("eine freundlich aussehende Antwort ohne ok:true gilt nicht als Erfolg", () => {
   assert.equal(outcomeForResponse(200, { success: true }).ok, false);
   assert.equal(outcomeForResponse(200, { ok: "true" }).code, "UNEXPECTED_RESPONSE");
@@ -114,6 +139,23 @@ test("eine kaputte Antwort verwandelt einen sauberen Status nicht in einen Abstu
     transport: async () => ({ status: 429, text: async () => "<html>Too many requests</html>" }),
   });
   assert.equal(outcome.code, "RATE_LIMITED", "der Status trägt die Aussage, nicht der Körper");
+});
+
+test("der Client reicht Retry-After bis in das Ergebnis durch, und ein fehlender Kopf bleibt leer", async () => {
+  const named = await sendPublishIntent({ email: "a@b.ch", body: "{}" }, {
+    transport: async () => ({
+      status: 429,
+      text: async () => "",
+      headers: { get: (name) => (String(name).toLowerCase() === "retry-after" ? "45" : null) },
+    }),
+  });
+  assert.equal(named.code, "RATE_LIMITED");
+  assert.equal(named.retryAfterMs, 45_000);
+
+  const silent = await sendPublishIntent({ email: "a@b.ch", body: "{}" }, {
+    transport: async () => ({ status: 429, text: async () => "" }),
+  });
+  assert.equal(silent.retryAfterMs, null, "ohne Kopf gibt es nichts zu versprechen");
 });
 
 test("eine zu grosse Nutzlast wird gar nicht erst hochgeladen", async () => {
@@ -189,10 +231,48 @@ test("ein Blob im Entwurf blockiert den Publish, statt still verloren zu gehen",
   assert.ok(result.blocks.some((entry) => entry.code === "BINARY_IN_DRAFT"));
 });
 
-test("auch eine eingebettete data-URL gilt als Binärinhalt", () => {
+test("ein Text, der wie ein data-Schema aussieht, bleibt Text und blockiert nichts", () => {
+  // Der frühere Guard hat jeden Freitext mit „data:“ am Anfang dauerhaft gesperrt — ein Zustand ohne
+  // Ausgang. Gefangen hat er dabei nie, wofür er gedacht war: normalizeDraftV2 wirft fremde Felder
+  // längst vorher weg. Was ein langer data-Text wirklich riskiert, ist Grösse, und dafür gibt es
+  // PAYLOAD_TOO_LARGE mit einer Meldung, die auch sagt, was zu tun ist.
   const draft = publishableDraft();
+  draft.copy = { ...draft.copy, heroSubtitle: "data: unser neues Konzept" };
   draft.salon = { ...draft.salon, instagram: "data:image/png;base64,AAAA" };
-  assert.deepEqual(findBinaryValues(draft), ["salon.instagram"]);
+  assert.deepEqual(findBinaryValues(draft), []);
+
+  const result = runPublishPreflight({ draft, email: "hallo@studio-miro.ch", stamp: STAMP });
+  assert.equal(result.ok, true, "sonst käme der Benutzer aus diesem Zustand nicht mehr heraus");
+});
+
+// --- Identität des abgeschickten Stands -----------------------------------------------------------
+
+test("die Identität eines Entwurfs trennt Inhalte und überlebt den Weg durch JSON", () => {
+  const draft = publishableDraft();
+  const copy = structuredClone(draft);
+  assert.deepEqual(draftIdentity(draft), draftIdentity(copy), "gleicher Inhalt, gleiche Identität");
+  assert.equal(sameDraftIdentity(draftIdentity(draft), draftIdentity(copy)), true);
+
+  copy.salon = { ...copy.salon, city: "Winterthur" };
+  assert.equal(sameDraftIdentity(draftIdentity(draft), draftIdentity(copy)), false);
+
+  // Gleiche Länge, andere Reihenfolge: eine reine Längenprüfung würde das nicht sehen.
+  const left = structuredClone(draft); left.copy = { ...left.copy, heroTitle: "abcd" };
+  const right = structuredClone(draft); right.copy = { ...right.copy, heroTitle: "dcba" };
+  assert.equal(draftIdentity(left).length, draftIdentity(right).length);
+  assert.notEqual(draftIdentity(left).fingerprint, draftIdentity(right).fingerprint);
+});
+
+test("eine beschädigte oder fremdgeformte Notiz gilt als keine Notiz", () => {
+  const identity = draftIdentity(publishableDraft());
+  const stored = JSON.parse(JSON.stringify({ at: "2026-07-23T10:00:00.000Z", ...identity }));
+  assert.deepEqual(readDraftIdentity(stored), identity, "eine vollständige Notiz kommt unverändert zurück");
+
+  assert.equal(readDraftIdentity(null), null);
+  assert.equal(readDraftIdentity("nichts"), null);
+  assert.equal(readDraftIdentity({ ...identity, draftId: "" }), null);
+  assert.equal(readDraftIdentity({ ...identity, fingerprint: "zz" }), null);
+  assert.equal(readDraftIdentity({ ...identity, length: "viel" }), null);
 });
 
 // --- Stempel ------------------------------------------------------------------------------------
@@ -225,21 +305,24 @@ function makeFlow(options = {}) {
     readStamp: () => ({ ...state }),
     flush: options.flush ?? (async () => {}),
     send: options.send ?? (async (request) => { sent.push(request); return { ok: true }; }),
-    now: () => options.now ?? "2026-07-23T10:00:00.000Z",
+    now: options.now ?? (() => "2026-07-23T10:00:00.000Z"),
   };
   const flow = new PublishFlow(host);
-  return { flow, host, state, sent, draft };
+  // Eine echte Änderung bewegt beides, genau wie im Store: den Inhalt und die Zähler.
+  const editDraft = (change) => { change(draft); state.revision += 1; };
+  return { flow, host, state, sent, draft, editDraft };
 }
 
 test("der Anfangszustand behauptet nichts", () => {
   assert.deepEqual(initialPublishState(), {
     phase: "ready", blocks: [], stopCode: null, stopDetail: null,
-    submittedAt: null, submittedRevision: null, staleSinceSubmit: false,
+    submittedAt: null, submittedDraft: null, staleSinceSubmit: false,
+    retryNotBefore: null, retryAfterMs: null, localCopySecured: false,
   });
 });
 
 test("der glückliche Weg endet bei „abgeschickt“, nicht bei „veröffentlicht“", async () => {
-  const { flow, sent } = makeFlow();
+  const { flow, sent, draft } = makeFlow();
   const seen = [];
   flow.subscribe((state) => seen.push(state.phase));
   flow.setEmail("hallo@studio-miro.ch");
@@ -247,7 +330,7 @@ test("der glückliche Weg endet bei „abgeschickt“, nicht bei „veröffentli
   const final = await flow.submit();
   assert.equal(final.phase, "submitted");
   assert.equal(final.submittedAt, "2026-07-23T10:00:00.000Z");
-  assert.equal(final.submittedRevision, 0);
+  assert.deepEqual(final.submittedDraft, draftIdentity(draft), "festgehalten wird der Inhalt, nicht ein Sitzungszähler");
   assert.equal(final.staleSinceSubmit, false);
   assert.equal(final.stopCode, null);
   assert.equal(sent.length, 1);
@@ -362,33 +445,160 @@ test("eine korrigierte Adresse räumt die alte Abweisung weg, einen Versand aber
 });
 
 test("eine Änderung nach dem Absenden markiert den abgeschickten Stand als überholt", async () => {
-  const { flow, state } = makeFlow();
+  const { flow, editDraft } = makeFlow();
   flow.setEmail("hallo@studio-miro.ch");
   await flow.submit();
   assert.equal(flow.snapshot.staleSinceSubmit, false);
 
-  state.revision += 1;
+  editDraft((draft) => { draft.salon.city = "Winterthur"; });
   flow.noteDraftChanged();
   assert.equal(flow.snapshot.phase, "submitted", "der Versand wird nicht rückwirkend zum Fehler");
   assert.equal(flow.snapshot.staleSinceSubmit, true, "spätere Änderungen erreichen das SaaS nicht mehr");
 });
 
-test("eine Änderung während des Fluges wird sofort als überholt gemeldet", async () => {
-  const { flow, state } = makeFlow({ send: async () => { state.revision += 1; return { ok: true }; } });
+test("eine blosse Zählerbewegung ohne Inhaltsänderung meldet keinen überholten Stand", async () => {
+  const { flow, state } = makeFlow();
   flow.setEmail("hallo@studio-miro.ch");
-  const final = await flow.submit();
-  assert.equal(final.phase, "submitted", "die Anfrage ist raus — das lässt sich nicht zurücknehmen");
-  assert.equal(final.staleSinceSubmit, true);
-  assert.equal(final.submittedRevision, 0, "abgeschickt wurde der Stand von vorher");
+  await flow.submit();
+
+  // Rückgängig und wieder vorwärts, ein Speicherlauf, ein Neuladen: die Revision wandert, der Inhalt
+  // nicht. Genau hier hat die alte Prüfung den überzähligen Versand empfohlen.
+  state.revision += 3;
+  flow.noteDraftChanged();
+  assert.equal(flow.snapshot.staleSinceSubmit, false, "was zählt, ist der Inhalt");
 });
 
-test("ein wiederhergestellter Versand aus einer früheren Sitzung nennt nur Zeitpunkt und Revision", () => {
-  const { flow, state } = makeFlow();
-  state.revision = 4;
-  flow.restoreSubmission("2026-07-22T08:00:00.000Z", 2);
+test("eine Änderung während des Fluges wird sofort als überholt gemeldet", async () => {
+  let harness;
+  harness = makeFlow({ send: async () => { harness.editDraft((draft) => { draft.salon.city = "Winterthur"; }); return { ok: true }; } });
+  const sentIdentity = draftIdentity(harness.draft);
+  harness.flow.setEmail("hallo@studio-miro.ch");
+
+  const final = await harness.flow.submit();
+  assert.equal(final.phase, "submitted", "die Anfrage ist raus — das lässt sich nicht zurücknehmen");
+  assert.equal(final.staleSinceSubmit, true);
+  assert.deepEqual(final.submittedDraft, sentIdentity, "abgeschickt wurde der Stand von vorher");
+});
+
+test("die Identität des gesendeten Stands wird vor dem Absenden festgehalten", async () => {
+  let harness;
+  // Zurücksetzen während des Fluges: ein völlig anderer Entwurf steht da, wenn die Antwort kommt.
+  harness = makeFlow({ send: async () => { harness.editDraft((draft) => { draft.draftId = "draft-frisch"; }); return { ok: true }; } });
+  const sentIdentity = draftIdentity(harness.draft);
+  harness.flow.setEmail("hallo@studio-miro.ch");
+
+  const accepted = await harness.flow.submit();
+  assert.deepEqual(accepted.submittedDraft, sentIdentity, "die Notiz gehört dem Entwurf, der gesendet wurde");
+  assert.equal(harness.flow.snapshot.phase, "ready", "der neue Entwurf erbt den Versand nicht");
+  assert.equal(harness.flow.snapshot.submittedAt, null);
+  assert.equal(harness.flow.snapshot.submittedDraft, null);
+});
+
+test("ein ausgetauschter Entwurf erbt den Versandzustand nicht", async () => {
+  const harness = makeFlow();
+  harness.flow.setEmail("hallo@studio-miro.ch");
+  await harness.flow.submit();
+  assert.equal(harness.flow.snapshot.phase, "submitted");
+
+  harness.editDraft((draft) => { draft.draftId = "draft-fremd"; });
+  harness.flow.noteDraftChanged();
+  assert.equal(harness.flow.snapshot.phase, "ready", "ein anderer Entwurf hat keinen Versandzustand");
+  assert.equal(harness.flow.snapshot.submittedAt, null);
+  assert.equal(harness.flow.snapshot.submittedDraft, null);
+  assert.equal(harness.flow.snapshot.staleSinceSubmit, false);
+});
+
+test("ein wiederhergestellter Versand nennt Zeitpunkt und Entwurf — und nur den eigenen", () => {
+  const { flow, draft } = makeFlow();
+  const earlier = draftIdentity(draft);
+  draft.salon.city = "Winterthur";
+  flow.restoreSubmission("2026-07-22T08:00:00.000Z", earlier);
   assert.equal(flow.snapshot.phase, "submitted");
   assert.equal(flow.snapshot.submittedAt, "2026-07-22T08:00:00.000Z");
-  assert.equal(flow.snapshot.staleSinceSubmit, true);
+  assert.equal(flow.snapshot.staleSinceSubmit, true, "seither wurde weitergearbeitet");
+
+  const fremd = makeFlow();
+  fremd.flow.restoreSubmission("2026-07-22T08:00:00.000Z", { ...draftIdentity(fremd.draft), draftId: "draft-fremd" });
+  assert.equal(fremd.flow.snapshot.phase, "ready", "eine Notiz für einen anderen Entwurf wird gar nicht erst angelegt");
+  assert.equal(fremd.flow.snapshot.submittedAt, null);
+});
+
+test("ein unveränderter Entwurf gilt nach der Wiederherstellung nicht als überholt", () => {
+  const { flow, draft } = makeFlow();
+  flow.restoreSubmission("2026-07-22T08:00:00.000Z", draftIdentity(draft));
+  assert.equal(flow.snapshot.phase, "submitted");
+  assert.equal(flow.snapshot.staleSinceSubmit, false, "eine frische Sitzung ist keine Änderung");
+});
+
+// --- Lokales Sichern, Sperrfrist -----------------------------------------------------------------
+
+test("ein fehlgeschlagenes lokales Sichern ist ein eigener Zustand und kein Netzwerkfehler", async () => {
+  const { flow, sent } = makeFlow({ flush: async () => { throw new Error("QuotaExceededError"); } });
+  flow.setEmail("hallo@studio-miro.ch");
+
+  const final = await flow.submit();
+  assert.equal(final.phase, "failed");
+  assert.equal(final.stopCode, "LOCAL_SAVE_FAILED");
+  assert.equal(final.localCopySecured, false, "die Zusage „lokal gesichert“ hat hier keine Grundlage");
+  assert.equal(final.stopDetail, "QuotaExceededError");
+  assert.equal(sent.length, 0, "ohne gesicherte lokale Kopie geht nichts raus");
+});
+
+test("erst eine durchgelaufene Sicherung belegt die Zusage „lokal gesichert“", async () => {
+  const { flow } = makeFlow({ send: async () => ({ ok: false, code: "NETWORK", status: null, detail: null }) });
+  flow.setEmail("hallo@studio-miro.ch");
+  const final = await flow.submit();
+  assert.equal(final.stopCode, "NETWORK");
+  assert.equal(final.localCopySecured, true, "die Sicherung lief vor dem Versuch durch");
+});
+
+test("nach 429 hält eine Sperrfrist den nächsten Versuch zurück, auch nach einem Tastendruck", async () => {
+  let calls = 0;
+  const { flow } = makeFlow({
+    send: async () => { calls += 1; return { ok: false, code: "RATE_LIMITED", status: 429, detail: null, retryAfterMs: 120_000 }; },
+  });
+  flow.setEmail("hallo@studio-miro.ch");
+  await flow.submit();
+  assert.equal(flow.snapshot.stopCode, "RATE_LIMITED");
+  assert.equal(flow.snapshot.retryAfterMs, 120_000, "was der Server sagt, wird übernommen");
+  assert.equal(flow.rateLimited, true);
+
+  flow.setEmail("hallo@studio-miro.chh");
+  assert.equal(flow.snapshot.phase, "failed", "die Meldung bleibt stehen");
+  assert.equal(flow.snapshot.stopCode, "RATE_LIMITED");
+
+  await flow.submit();
+  assert.equal(calls, 1, "die Sperrfrist lässt keinen zweiten Versuch durch");
+});
+
+test("ohne Retry-After gilt eine eigene, kurze Sperre — und keine erfundene Zeitangabe", async () => {
+  const { flow } = makeFlow({ send: async () => ({ ok: false, code: "RATE_LIMITED", status: 429, detail: null }) });
+  flow.setEmail("hallo@studio-miro.ch");
+  await flow.submit();
+  assert.equal(flow.snapshot.retryAfterMs, null, "der Server hat nichts gesagt");
+  assert.equal(flow.rateLimited, true, "gesperrt wird trotzdem, damit kein Versuch verbrannt wird");
+});
+
+test("nach Ablauf der Sperrfrist wird der Versuch von selbst wieder freigegeben", async () => {
+  let clock = Date.parse("2026-07-23T10:00:00.000Z");
+  let calls = 0;
+  const { flow } = makeFlow({
+    now: () => new Date(clock).toISOString(),
+    send: async () => { calls += 1; return { ok: false, code: "RATE_LIMITED", status: 429, detail: null, retryAfterMs: 60_000 }; },
+  });
+  flow.setEmail("hallo@studio-miro.ch");
+  await flow.submit();
+
+  flow.refreshRateLimit();
+  assert.equal(flow.snapshot.retryNotBefore !== null, true, "vor Ablauf ändert sich nichts");
+
+  clock += 61_000;
+  flow.refreshRateLimit();
+  assert.equal(flow.snapshot.retryNotBefore, null);
+  assert.equal(flow.rateLimited, false);
+
+  await flow.submit();
+  assert.equal(calls, 2, "danach ist ein Versuch wieder erlaubt");
 });
 
 test("wirft der Wirt statt zu antworten, bleibt die Maschine nicht im Senden stecken", async () => {

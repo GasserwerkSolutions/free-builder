@@ -99,6 +99,8 @@ button { color: inherit; }
 .button--primary { border-color: var(--accent); background: var(--accent); color: white; }
 .button--primary:hover { border-color: var(--accent-dark); background: var(--accent-dark); }
 .button--quiet { background: transparent; }
+/* showPanel marks the open panel on every [data-panel-target]; the topbar button is one of them. */
+.button.is-active { border-color: var(--accent-dark); box-shadow: inset 0 0 0 2px rgba(255, 255, 255, .45); }
 .button--large { width: 100%; min-height: 50px; }
 .button--compact { min-height: 38px; padding: 7px 10px; }
 .button:disabled { opacity: .45; cursor: default; transform: none; box-shadow: none; }

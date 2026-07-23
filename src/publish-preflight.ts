@@ -15,9 +15,9 @@ import type { PublishRequest } from "./publish-client.js";
 // bare "Ungültige Eingabe":
 //
 //   * Is the encoded body within the 256 KB the server counts before it parses?
-//   * Is the draft still text-only? The contract carries `assets[]` as REFERENCES; a blob, a typed
-//     array or an inline `data:` payload that found its way into the draft would be silently dropped
-//     by JSON.stringify or blow the limit. Either way the user would never learn what happened.
+//   * Does every value in the draft actually survive JSON? The contract carries `assets[]` as
+//     REFERENCES; a blob or a typed array that found its way in would be silently emptied by
+//     JSON.stringify, and the user would never learn what went missing.
 
 export type PublishStamp = { revision: number; generation: number };
 
@@ -92,12 +92,19 @@ function serialiseIntent(body: PublishIntentBody): string {
 }
 
 /**
- * Every place in the draft that holds something other than text, a number or a boolean.
+ * Every place in the draft holding a value the wire cannot carry.
  *
  * The walk is structural rather than a list of known fields on purpose: the point is to catch what
  * nobody thought of, including the local-asset upload that phases F4/G3 will add. Today the draft has
  * no local assets at all, so this finds nothing — it is the guard that keeps it that way until the
  * authenticated upload exists to carry those bytes properly.
+ *
+ * Strings are explicitly NOT inspected any more. The earlier version flagged any text starting with
+ * `data:` or `blob:`, which was a false positive on ordinary prose — "data: unser neues Konzept" in a
+ * subtitle blocked the publish for good, with a message that named a technical path and offered no
+ * way out. And it never caught what it was written for: normalizeDraftV2 drops foreign fields long
+ * before this runs, so no real draft ever carried an inline image. What a `data:` string actually
+ * risks is size, and size has its own honest, actionable answer in PAYLOAD_TOO_LARGE.
  */
 export function findBinaryValues(draft: Readonly<BuilderDraftV2>): readonly string[] {
   const found: string[] = [];
@@ -106,11 +113,8 @@ export function findBinaryValues(draft: Readonly<BuilderDraftV2>): readonly stri
     if (found.length >= 8) return;
     if (value === null || value === undefined) return;
     const type = typeof value;
-    if (type === "string") {
-      if (/^\s*(?:data|blob):/i.test(value as string)) found.push(path);
-      return;
-    }
-    if (type === "number" || type === "boolean") return;
+    // A string always arrives on the other side exactly as it is. Whatever it looks like.
+    if (type === "string" || type === "number" || type === "boolean") return;
     if (type !== "object") { found.push(path); return; }
     if (seen.has(value)) return;
     seen.add(value);
