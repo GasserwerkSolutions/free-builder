@@ -1,6 +1,15 @@
 import { addRange, copyBusinessHoursToStaff, copyDayToDays, createStaffDraft, escapeAttr, escapeHtml, getTeamReadinessChecks, getTeamReadinessIssues, removeRange, removeStaffAndOwnedAssets, setAllBookableServicesForStaff, setDayClosed, setRangeField, setStaffService, staffHasPersonalHours, validateWeeklySchedule, } from "./domain.js";
-import { STAFF_HOURS_NS, renderScheduleEditor, safeMutate, showToast } from "./ui-shared.js";
+import { STAFF_HOURS_NS, historyDescriptor, renderScheduleEditor, safeMutate, showToast } from "./ui-shared.js";
 const installedStores = new WeakSet();
+const TEAM_PANEL_TARGET = { kind: "panel", panel: "team" };
+const STAFF_TARGET_FIELDS = ["name", "role", "bio"];
+// Which editor field a team history step was about. Fields the preview does not render (e-mail,
+// the active switch) point at the panel instead of inventing a target for something invisible.
+function staffTarget(staffClientId, field) {
+    return STAFF_TARGET_FIELDS.includes(field)
+        ? { kind: "staff", staffClientId, field: field }
+        : TEAM_PANEL_TARGET;
+}
 let lastShapeFingerprint = "";
 function ensureTeamSurface() {
     let panel = document.querySelector('[data-panel="team"]');
@@ -128,12 +137,12 @@ function mutateStaffHours(store, staffId, updater, label, key) {
         const person = draft.staff.find((item) => item.clientId === staffId);
         if (person)
             person.workingHours = updater(person.workingHours);
-    }, { intent: { type: "set-staff-hours", staffClientId: staffId }, history: key ? { key, label } : { label } });
+    }, { intent: { type: "set-staff-hours", staffClientId: staffId }, history: historyDescriptor(label, { ...(key ? { key } : {}), target: TEAM_PANEL_TARGET }) });
 }
 // serviceClientIds is the only truth about who may perform what, so an assignment edit declares
 // exactly that list as its scope — it may not drag a service definition or a schedule along.
 function mutateStaffServices(store, staffId, mutator, label) {
-    safeMutate(store, mutator, { intent: { type: "set-staff-services", staffClientId: staffId }, history: { label } });
+    safeMutate(store, mutator, { intent: { type: "set-staff-services", staffClientId: staffId }, history: historyDescriptor(label, { target: TEAM_PANEL_TARGET }) });
 }
 function handleStaffHourAction(store, button) {
     const staffId = staffIdFrom(button);
@@ -196,7 +205,7 @@ export function installTeamUi(store, repository) {
         if (action === "add-staff") {
             // Built outside the mutator so the intent can name the person it is about to insert.
             const person = createStaffDraft();
-            safeMutate(store, (draft) => { draft.staff.push(person); }, { intent: { type: "insert-collection-item", collection: "staff", clientId: person.clientId }, history: { label: "Person hinzugefügt" } });
+            safeMutate(store, (draft) => { draft.staff.push(person); }, { intent: { type: "insert-collection-item", collection: "staff", clientId: person.clientId }, history: historyDescriptor("Person hinzugefügt", { target: { kind: "staff", staffClientId: person.clientId, field: "name" } }) });
             renderTeam(store);
             return;
         }
@@ -204,7 +213,7 @@ export function installTeamUi(store, repository) {
             return;
         if (action === "remove-staff") {
             const assetIds = store.snapshot.assets.filter((asset) => asset.ownerClientId === staffId).map((asset) => asset.localId);
-            safeMutate(store, (draft) => removeStaffAndOwnedAssets(draft, staffId), { intent: { type: "remove-collection-item", collection: "staff", clientId: staffId }, history: { label: "Person entfernt" } });
+            safeMutate(store, (draft) => removeStaffAndOwnedAssets(draft, staffId), { intent: { type: "remove-collection-item", collection: "staff", clientId: staffId }, history: historyDescriptor("Person entfernt", { target: TEAM_PANEL_TARGET }) });
             void repository.deleteAssetBlobs(assetIds).catch((error) => console.error("Staff asset cleanup failed.", error));
         }
         if (action === "all-services")
@@ -246,7 +255,7 @@ export function installTeamUi(store, repository) {
                     person.active = checkbox ? target.checked : person.active;
                 else
                     person[field] = target.value;
-            }, { intent: { type: "set-staff-field", staffClientId: staffId, field }, history: { key: `staff:${staffId}:${field}`, label: "Person bearbeitet" } });
+            }, { intent: { type: "set-staff-field", staffClientId: staffId, field }, history: historyDescriptor("Person bearbeitet", { key: `staff:${staffId}:${field}`, target: staffTarget(staffId, field) }) });
             if (field === "name") {
                 const index = store.snapshot.staff.findIndex((person) => person.clientId === staffId);
                 const title = staffCard?.querySelector("[data-staff-number]");

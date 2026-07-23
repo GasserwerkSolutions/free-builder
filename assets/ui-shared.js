@@ -19,9 +19,33 @@ export function createUiContext(store, repository) {
         readinessList: requiredElement("readinessList"),
         serviceTemplate: requiredElement("serviceTemplate"),
         testimonialTemplate: requiredElement("testimonialTemplate"),
-        previewTimer: null,
+        preview: null,
         volatileStorage: false,
     };
+}
+/**
+ * The polite channel for things the user should hear but not be interrupted by — currently only the
+ * result of a click in the preview. Created on demand so the static page owns no dead markup.
+ */
+export function announce(context, message) {
+    void context;
+    let region = document.getElementById("previewAnnouncer");
+    if (!region) {
+        region = document.createElement("div");
+        region.id = "previewAnnouncer";
+        region.className = "visually-hidden";
+        region.setAttribute("role", "status");
+        region.setAttribute("aria-live", "polite");
+        document.body.appendChild(region);
+    }
+    region.textContent = message;
+}
+/**
+ * Build a history descriptor. `key` and `target` are genuinely optional (exactOptionalPropertyTypes
+ * refuses an explicit undefined), so they are spread in only when there is something to say.
+ */
+export function historyDescriptor(label, options = {}) {
+    return { label, ...(options.key ? { key: options.key } : {}), ...(options.target ? { target: options.target } : {}) };
 }
 export function inputValue(input) {
     return input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input.value;

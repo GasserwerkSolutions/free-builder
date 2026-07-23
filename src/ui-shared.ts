@@ -1,6 +1,8 @@
 import { MAX_RANGES_PER_DAY, dayName, escapeAttr, escapeHtml, type BuilderDraftV2, type ScheduleDay, type WeeklySchedule } from "./domain.js";
-import type { DraftMutation, DraftMutationDescriptor } from "./draft-mutations.js";
+import type { DraftMutation, DraftMutationDescriptor, HistoryDescriptor } from "./draft-mutations.js";
 import type { DraftRepository } from "./persistence.js";
+import type { PreviewTarget } from "./preview-contract.js";
+import type { PreviewRuntime } from "./preview-runtime.js";
 import type { BuilderStore } from "./store.js";
 
 export type UiContext = {
@@ -16,7 +18,8 @@ export type UiContext = {
   readinessList: HTMLElement;
   serviceTemplate: HTMLTemplateElement;
   testimonialTemplate: HTMLTemplateElement;
-  previewTimer: ReturnType<typeof setTimeout> | null;
+  /** Owns the preview document. Null only before init() has built it. */
+  preview: PreviewRuntime | null;
   volatileStorage: boolean;
 };
 
@@ -40,9 +43,35 @@ export function createUiContext(store: BuilderStore, repository: DraftRepository
     readinessList: requiredElement("readinessList"),
     serviceTemplate: requiredElement("serviceTemplate"),
     testimonialTemplate: requiredElement("testimonialTemplate"),
-    previewTimer: null,
+    preview: null,
     volatileStorage: false,
   };
+}
+
+/**
+ * The polite channel for things the user should hear but not be interrupted by — currently only the
+ * result of a click in the preview. Created on demand so the static page owns no dead markup.
+ */
+export function announce(context: UiContext, message: string): void {
+  void context;
+  let region = document.getElementById("previewAnnouncer");
+  if (!region) {
+    region = document.createElement("div");
+    region.id = "previewAnnouncer";
+    region.className = "visually-hidden";
+    region.setAttribute("role", "status");
+    region.setAttribute("aria-live", "polite");
+    document.body.appendChild(region);
+  }
+  region.textContent = message;
+}
+
+/**
+ * Build a history descriptor. `key` and `target` are genuinely optional (exactOptionalPropertyTypes
+ * refuses an explicit undefined), so they are spread in only when there is something to say.
+ */
+export function historyDescriptor(label: string, options: { key?: string; target?: PreviewTarget } = {}): HistoryDescriptor {
+  return { label, ...(options.key ? { key: options.key } : {}), ...(options.target ? { target: options.target } : {}) };
 }
 
 export function inputValue(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): string | boolean {

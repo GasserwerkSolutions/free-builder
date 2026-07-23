@@ -7,6 +7,7 @@ import type {
   WeeklySchedule,
 } from "./domain-model.js";
 import { cloneDraft, getAtPath, normalizeEmail, normalizeInstagramUrl, normalizePhone, setAtPath } from "./domain-helpers.js";
+import type { PreviewTarget } from "./preview-contract.js";
 
 // Intent -> verified effect.
 //
@@ -20,7 +21,12 @@ import { cloneDraft, getAtPath, normalizeEmail, normalizeInstagramUrl, normalize
 export type ContentPresence = "empty" | "present" | "invalid";
 export type ReplaceReason = "import" | "reset" | "recovery";
 export type DraftMutationSource = "user" | "undo" | "redo" | ReplaceReason;
-export type HistoryDescriptor = { key?: string; label: string };
+/**
+ * `target` is runtime metadata, never draft content: it says which editor field this step was about,
+ * so a later undo/redo can put the user back in front of it. Nothing persists it and no draft field
+ * carries it — the draft contract is untouched by its existence.
+ */
+export type HistoryDescriptor = { key?: string; label: string; target?: PreviewTarget };
 
 type SalonKey = keyof BuilderDraftV2["salon"];
 type CopyKey = keyof BuilderDraftV2["copy"];

@@ -336,6 +336,14 @@ button { color: inherit; }
   #previewFrame { height: 680px; min-height: 680px; border-radius: 12px; }
 }
 
+/* Preview navigation: a click in the preview opens the matching editor field and marks it briefly. */
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+.is-preview-target { animation: preview-target-pulse 1.8s ease-out 1; border-radius: 10px; }
+@keyframes preview-target-pulse {
+  0% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, #caa485) 70%, transparent); }
+  100% { box-shadow: 0 0 0 3px transparent; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }

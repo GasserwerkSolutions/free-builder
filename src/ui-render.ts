@@ -3,12 +3,10 @@ import {
   escapeHtml,
   getAtPath,
   validateWeeklySchedule,
-  type BuilderDraftV2,
   type BuilderService,
   type ThemePresetName,
 } from "./domain.js";
 import type { SaveState } from "./store.js";
-import { buildWebsiteHtml } from "./website.js";
 import { BUSINESS_HOURS_NS, renderScheduleEditor, type UiContext } from "./ui-shared.js";
 
 export function bindStaticInputs(context: UiContext): void {
@@ -102,13 +100,12 @@ export function syncPresetInputs(context: UiContext, name: ThemePresetName): voi
   renderPresets(context);
 }
 
+/**
+ * Rebuild the preview document from scratch. Only for authoritative changes (reset, import): every
+ * ordinary edit goes through the preview protocol, which patches instead of reloading.
+ */
 export function renderPreview(context: UiContext): void {
-  context.previewFrame.srcdoc = buildWebsiteHtml(context.store.snapshot as BuilderDraftV2, { preview: true });
-}
-
-export function schedulePreview(context: UiContext): void {
-  if (context.previewTimer) clearTimeout(context.previewTimer);
-  context.previewTimer = setTimeout(() => renderPreview(context), 80);
+  context.preview?.renderFull();
 }
 
 export function updateReadiness(context: UiContext): void {

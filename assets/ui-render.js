@@ -1,5 +1,4 @@
 import { PRESETS, escapeHtml, getAtPath, validateWeeklySchedule, } from "./domain.js";
-import { buildWebsiteHtml } from "./website.js";
 import { BUSINESS_HOURS_NS, renderScheduleEditor } from "./ui-shared.js";
 export function bindStaticInputs(context) {
     document.querySelectorAll("[data-bind]").forEach((input) => {
@@ -100,13 +99,12 @@ export function syncPresetInputs(context, name) {
         accent.value = preset.accent;
     renderPresets(context);
 }
+/**
+ * Rebuild the preview document from scratch. Only for authoritative changes (reset, import): every
+ * ordinary edit goes through the preview protocol, which patches instead of reloading.
+ */
 export function renderPreview(context) {
-    context.previewFrame.srcdoc = buildWebsiteHtml(context.store.snapshot, { preview: true });
-}
-export function schedulePreview(context) {
-    if (context.previewTimer)
-        clearTimeout(context.previewTimer);
-    context.previewTimer = setTimeout(() => renderPreview(context), 80);
+    context.preview?.renderFull();
 }
 export function updateReadiness(context) {
     const draft = context.store.snapshot;

@@ -12,8 +12,9 @@ import {
 import { addRange, copyDayToDays, removeRange, setAtPath, setDayClosed, setRangeField } from "./domain.js";
 import type { EditableFieldPath, ServiceEditableField } from "./draft-mutations.js";
 import { replaceWithFreshDraft } from "./persistence.js";
+import { isPreviewTargetShape, type PreviewTarget, type ServicePreviewField } from "./preview-contract.js";
 import { buildWebsiteHtml } from "./website.js";
-import { inputValue, safeMutate, showToast, type UiContext } from "./ui-shared.js";
+import { historyDescriptor, inputValue, safeMutate, showToast, type UiContext } from "./ui-shared.js";
 import {
   bindStaticInputs,
   renderDynamicControls,
@@ -61,7 +62,7 @@ export function handleInput(context: UiContext, event: Event): void {
     safeMutate(
       context.store,
       (draft) => setAtPath(draft, bind, inputValue(target)),
-      { intent: { type: "set-field", field: bind as EditableFieldPath }, history: { key: `field:${bind}`, label: bindLabel(bind) } },
+      { intent: { type: "set-field", field: bind as EditableFieldPath }, history: historyDescriptor(bindLabel(bind), { key: `field:${bind}`, ...fieldTarget(bind) }) },
     );
     return;
   }
@@ -78,7 +79,7 @@ export function handleInput(context: UiContext, event: Event): void {
       else if (serviceField !== "clientId") (service[serviceField] as string) = target.value;
     }, {
       intent: { type: "set-service-field", serviceClientId, field: serviceField as ServiceEditableField },
-      history: { key: `service:${serviceClientId}:${serviceField}`, label: "Leistung bearbeitet" },
+      history: historyDescriptor("Leistung bearbeitet", { key: `service:${serviceClientId}:${serviceField}`, ...serviceTarget(serviceClientId, serviceField) }),
     });
     if (serviceField === "name") {
       const number = serviceCard?.querySelector<HTMLElement>("[data-service-number]");
@@ -97,7 +98,7 @@ export function handleInput(context: UiContext, event: Event): void {
       if (item) item[testimonialField] = target.value;
     }, {
       intent: { type: "set-testimonial-field", testimonialClientId, field: testimonialField },
-      history: { key: `testimonial:${testimonialClientId}:${testimonialField}`, label: "Kundenstimme bearbeitet" },
+      history: historyDescriptor("Kundenstimme bearbeitet", { key: `testimonial:${testimonialClientId}:${testimonialField}`, target: { kind: "testimonial", testimonialClientId, field: testimonialField } }),
     });
     return;
   }
@@ -121,6 +122,21 @@ export function handleInput(context: UiContext, event: Event): void {
   }
 }
 
+// A history step remembers which editor field it was about, so a later undo can put the user back in
+// front of it. Only a target the preview contract recognises is recorded — an unknown binding gets no
+// target rather than a made-up one.
+function fieldTarget(path: string): { target?: PreviewTarget } {
+  const target = { kind: "field", field: path } as const;
+  return isPreviewTargetShape(target) ? { target } : {};
+}
+
+const SERVICE_TARGET_FIELDS: readonly string[] = ["category", "name", "description"];
+function serviceTarget(serviceClientId: string, field: string): { target?: PreviewTarget } {
+  return SERVICE_TARGET_FIELDS.includes(field)
+    ? { target: { kind: "service", serviceClientId, field: field as ServicePreviewField } }
+    : { target: { kind: "panel", panel: "services" } };
+}
+
 function bindLabel(path: string): string {
   if (path.startsWith("copy.")) return "Text angepasst";
   if (path.startsWith("theme.")) return "Farbe angepasst";
@@ -131,7 +147,7 @@ function bindLabel(path: string): string {
 // Every opening-hours edit declares businessHours as its only scope, so a write that also touched a
 // person's working hours would be rejected instead of silently merging the two schedules.
 function mutateBusinessHours(context: UiContext, mutator: (draft: BuilderDraftV2) => void, label: string, key?: string): void {
-  safeMutate(context.store, mutator, { intent: { type: "set-business-hours" }, history: key ? { key, label } : { label } });
+  safeMutate(context.store, mutator, { intent: { type: "set-business-hours" }, history: historyDescriptor(label, { ...(key ? { key } : {}), target: { kind: "panel", panel: "hours" } }) });
 }
 
 function handleHourAction(context: UiContext, button: HTMLElement): void {
@@ -160,7 +176,7 @@ function addService(context: UiContext): void {
   const clientId = createClientId("service");
   safeMutate(context.store, (draft) => {
     draft.services.push({ clientId, slug: uniqueSlug("Neue Leistung", draft.services), category: "Schnitt", name: "Neue Leistung", description: "", durationMinutes: 30, price: 0, priceType: "fixed", bookable: true });
-  }, { intent: { type: "insert-collection-item", collection: "services", clientId }, history: { label: "Leistung hinzugefügt" } });
+  }, { intent: { type: "insert-collection-item", collection: "services", clientId }, history: historyDescriptor("Leistung hinzugefügt", { target: { kind: "service", serviceClientId: clientId, field: "name" } }) });
   renderServices(context);
 }
 
@@ -169,7 +185,7 @@ function removeService(context: UiContext, clientId: string): void {
   safeMutate(context.store, (draft) => {
     draft.services = draft.services.filter((service) => service.clientId !== clientId);
     draft.staff.forEach((person) => { person.serviceClientIds = person.serviceClientIds.filter((id) => id !== clientId); });
-  }, { intent: { type: "remove-collection-item", collection: "services", clientId }, history: { label: "Leistung entfernt" } });
+  }, { intent: { type: "remove-collection-item", collection: "services", clientId }, history: historyDescriptor("Leistung entfernt", { target: { kind: "panel", panel: "services" } }) });
   renderServices(context);
 }
 
@@ -182,7 +198,7 @@ function addTestimonial(context: UiContext): void {
   safeMutate(context.store, (draft) => {
     draft.testimonials.items.push({ clientId, quote: "", name: "", detail: "" });
     draft.testimonials.enabled = true;
-  }, { intent: { type: "insert-collection-item", collection: "testimonials", clientId }, history: { label: "Kundenstimme hinzugefügt" } });
+  }, { intent: { type: "insert-collection-item", collection: "testimonials", clientId }, history: historyDescriptor("Kundenstimme hinzugefügt", { target: { kind: "testimonial", testimonialClientId: clientId, field: "quote" } }) });
   const toggle = document.querySelector<HTMLInputElement>('[data-bind="testimonials.enabled"]');
   if (toggle) toggle.checked = true;
   renderTestimonials(context);
@@ -195,7 +211,7 @@ function removeTestimonial(context: UiContext, clientId: string): void {
   safeMutate(context.store, (draft) => {
     draft.testimonials.items = draft.testimonials.items.filter((item) => item.clientId !== clientId);
     if (!draft.testimonials.items.length) draft.testimonials.enabled = false;
-  }, { intent: { type: "remove-collection-item", collection: "testimonials", clientId }, history: { label: "Kundenstimme entfernt" } });
+  }, { intent: { type: "remove-collection-item", collection: "testimonials", clientId }, history: historyDescriptor("Kundenstimme entfernt", { target: { kind: "panel", panel: "voices" } }) });
   const toggle = document.querySelector<HTMLInputElement>('[data-bind="testimonials.enabled"]');
   if (toggle) toggle.checked = context.store.snapshot.testimonials.enabled;
   renderTestimonials(context);
@@ -207,7 +223,7 @@ function applyPreset(context: UiContext, name: ThemePresetName): void {
   safeMutate(
     context.store,
     (draft) => { draft.theme.preset = name; draft.theme.primary = preset.primary; draft.theme.accent = preset.accent; },
-    { intent: { type: "set-theme" }, history: { label: "Farbwelt geändert" } },
+    { intent: { type: "set-theme" }, history: historyDescriptor("Farbwelt geändert", { target: { kind: "panel", panel: "design" } }) },
   );
   syncPresetInputs(context, name);
 }
