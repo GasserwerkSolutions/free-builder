@@ -46,6 +46,10 @@ const MOBILE_MEDIA = "(max-width: 700px)";
  * The returned `setViewportMobile` crosses the breakpoint the way a real device does — by changing
  * what the media query answers and telling everyone who listens. That is the only way to reproduce
  * narrowing, a tablet rotation or a split screen, none of which reload the editor.
+ *
+ * `publishTransport` answers the publish endpoint. It is the ONLY way a test can get a response out
+ * of it; without one, an attempt throws instead of silently reaching the network. Every call is
+ * recorded in the returned `publishCalls`.
  */
 export async function bootEditor(options = {}) {
   patchTimers();
@@ -97,14 +101,28 @@ export async function bootEditor(options = {}) {
   await repository.putDraft(draft);
   const store = new BuilderStore(draft, repository, options.debounceMs ?? 0);
   const ui = new BuilderUi(store, repository);
-  ui.init({ draft, migratedFromV1: false, recovered: false, volatileStorage: false });
+  // The publish surface talks to the SaaS. No test may reach the real endpoint, so the transport is
+  // always a stub here; without one supplied, any attempt fails loudly instead of going out.
+  const publishCalls = [];
+  const transport = async (url, init) => {
+    publishCalls.push({ url, init, body: JSON.parse(init.body) });
+    if (!options.publishTransport) throw new Error("NO_PUBLISH_TRANSPORT_IN_TEST");
+    return options.publishTransport(url, init);
+  };
+  ui.init({
+    draft,
+    migratedFromV1: false,
+    recovered: false,
+    volatileStorage: false,
+    publish: { transport, timeoutMs: 0, now: () => options.publishNow ?? "2026-07-23T10:00:00.000Z" },
+  });
   installTeamUi(store, repository);
 
   const cleanup = () => {
     ui.destroy?.();
     window.close();
   };
-  return { dom, window, document: window.document, store, repository, ui, scrolledInto, setViewportMobile, cleanup };
+  return { dom, window, document: window.document, store, repository, ui, scrolledInto, setViewportMobile, publishCalls, cleanup };
 }
 
 /** Click the way a browser does: a bubbling, cancelable MouseEvent on the element itself. */

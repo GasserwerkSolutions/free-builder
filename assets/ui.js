@@ -3,6 +3,7 @@ import { navigateToEditorTarget } from "./preview-navigation.js";
 import { PreviewRuntime } from "./preview-runtime.js";
 import { cancelActiveDrag, handleReorderKeydown, handleReorderPointerDown, handleReorderPointerEnd, handleReorderPointerLost, handleReorderPointerMove } from "./reorder-actions.js";
 import { initSidebar } from "./sidebar.js";
+import { installPublishUi } from "./publish-ui.js";
 import { handleClick, handleInput, stepHistory } from "./ui-actions.js";
 import { bindStaticInputs, renderDynamicControls, renderSaveState, updateMigrationNotice, updateReadiness, } from "./ui-render.js";
 import { createUiContext, isNavigatedField, markNavigatedField, releaseNavigatedField, showToast } from "./ui-shared.js";
@@ -49,6 +50,7 @@ export class BuilderUi {
     unsubscribeHistory = null;
     teardownSidebar = null;
     teardownMobile = null;
+    teardownPublish = null;
     constructor(store, repository) {
         this.context = createUiContext(store, repository);
     }
@@ -58,6 +60,10 @@ export class BuilderUi {
         this.context.volatileStorage = Boolean(options.volatileStorage);
         this.teardownSidebar = initSidebar(this.context);
         this.teardownMobile = initMobileModes(this.context);
+        // The publish surface is part of the editor, not an add-on: the closing action has to exist
+        // wherever the editor exists. Its transport is injectable so a test never reaches the real
+        // endpoint — the default is the relative, same-origin call.
+        this.teardownPublish = installPublishUi(this.context, options.publish ?? {});
         bindStaticInputs(this.context);
         renderDynamicControls(this.context);
         const preview = new PreviewRuntime({
@@ -138,6 +144,8 @@ export class BuilderUi {
         this.teardownSidebar = null;
         this.teardownMobile?.();
         this.teardownMobile = null;
+        this.teardownPublish?.();
+        this.teardownPublish = null;
         this.context.preview?.destroy();
         this.context.preview = null;
         document.getElementById("previewAnnouncer")?.remove();

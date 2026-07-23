@@ -19,7 +19,7 @@
         <button id="redoButton" class="button button--quiet button--compact" type="button" data-action="redo" disabled title="Wiederholen (Umschalt + Strg oder Cmd + Z)"><span aria-hidden="true">↷</span> <span>Wiederholen</span></button>
       </div>
       <button class="button button--quiet" type="button" data-action="reset">Zurücksetzen</button>
-      <button class="button button--primary" type="button" data-action="export">HTML exportieren</button>
+      <button class="button button--primary" type="button" data-panel-target="publish">Website veröffentlichen</button>
     </div>
   </header>
 
@@ -98,10 +98,34 @@
         </section>
 
         <section class="panel" data-panel="publish" aria-labelledby="panel-publish-title" hidden>
-          <div class="panel__header"><p class="eyebrow">Kontrolle</p><h2 id="panel-publish-title">Bereit für den nächsten Schritt</h2><p>Der Entwurf liegt jetzt versioniert in IndexedDB. Direkte Veröffentlichung bleibt gesperrt, bis Team, Bilder, Magic Link und SaaS-Aktivierung vollständig angebunden sind.</p></div>
+          <div class="panel__header"><p class="eyebrow">Abschluss</p><h2 id="panel-publish-title">Website veröffentlichen</h2><p>Du trägst deine E-Mail-Adresse ein, dein Entwurf wird übergeben und der nächste Schritt kommt per Nachricht in dein Postfach. Bestätigen kannst nur du.</p></div>
           <div id="readinessSummary" class="readiness-summary" role="status" aria-live="polite"></div>
           <div id="readinessList" class="readiness-list"></div>
-          <div class="publish-actions"><button class="button button--primary button--large" type="button" data-action="export">Website als HTML exportieren</button><button class="button button--quiet" type="button" data-action="copy-json">Entwurf kopieren</button></div>
+
+          <div class="publish-form">
+            <label class="field"><span>E-Mail-Adresse</span><input id="publishEmail" type="email" autocomplete="email" inputmode="email" placeholder="du@dein-salon.ch" data-publish-email></label>
+            <p class="publish-form__note">An diese Adresse geht der Bestätigungslink. Sie wird später dein Zugang zum Dashboard. Aus Sicherheitsgründen verrät die Antwort nicht, ob zu einer Adresse schon ein Konto besteht.</p>
+            <div id="publishStatus" class="publish-status" role="status" aria-live="polite"></div>
+            <div class="publish-actions">
+              <button id="publishButton" class="button button--primary button--large" type="button" data-publish-action="submit">Website veröffentlichen</button>
+              <button id="publishRetry" class="button button--quiet" type="button" data-publish-action="retry" hidden>Erneut versuchen</button>
+            </div>
+          </div>
+
+          <!-- Placeholder for the authenticated asset upload (plan phases F4/G3). There are no local
+               image files in the draft today, so there is nothing to hand over yet — the step is
+               declared here so the flow has a place for it instead of growing one later. -->
+          <div id="publishAssetStep" class="publish-assets" hidden>
+            <strong>Bilder</strong>
+            <span>Bilder werden erst nach der Bestätigung hochgeladen, weil dafür ein angemeldetes Konto nötig ist.</span>
+          </div>
+
+          <details class="publish-fallback">
+            <summary>Weitere Möglichkeiten</summary>
+            <p>Der HTML-Export erzeugt eine einzelne Datei zum Mitnehmen. Er ist eine Sicherung, kein Veröffentlichen: die Datei enthält keine Buchung und wird von niemandem ausgeliefert.</p>
+            <div class="publish-actions publish-actions--quiet"><button class="button button--quiet" type="button" data-action="export">HTML exportieren</button><button class="button button--quiet" type="button" data-action="copy-json">Entwurf kopieren</button></div>
+          </details>
+
           <p class="privacy-note">Alle Textdaten liegen in einem versionierten lokalen Entwurf. localStorage enthält nur dessen Kennung; Bilddateien und Aktivierungstokens werden dort nie gespeichert.</p>
         </section>
       </div></div>
