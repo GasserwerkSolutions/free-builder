@@ -165,6 +165,29 @@ button { color: inherit; }
 .surface-nav__item.is-active { background: var(--paper); color: var(--accent-dark); box-shadow: 0 6px 18px rgba(40, 32, 24, .08); }
 
 .surface-stage { overflow: hidden auto; perspective: 1400px; }
+
+/*
+ * Two columns that stand still while their contents scroll.
+ *
+ * The overflow rules above and on .preview-desk can only take effect once something actually caps
+ * the height: a grid item defaults to min-height:auto and therefore never shrinks below its own
+ * content, so without this block the surface simply grew with a long service list and the whole
+ * page scrolled instead of the sidebar — taking the preview off screen with it.
+ *
+ * Scoped above the stacking breakpoint on purpose. Below 1050px the editor sits on top of the
+ * preview and below 700px the two take turns, and there the page scroll is the right one; a
+ * bounded surface would put a second scroll cage inside a scrolling page.
+ */
+@media (min-width: 1051px) {
+  .workspace { grid-template-rows: minmax(0, 1fr); height: calc(100vh - 72px); }
+  /* min-height wins over the stretch height, so the inherited floor has to go, not just be beaten. */
+  .control-surface { grid-template-rows: minmax(0, 1fr); min-height: 0; }
+  /* Seven to eight entries need roughly 480px; a low window or a split screen has less. */
+  .surface-nav { min-height: 0; overflow: hidden auto; }
+  .surface-stage { min-height: 0; }
+  .preview-area { min-height: 0; }
+}
+
 .surface-card {
   min-height: 100%;
   padding: 24px;
